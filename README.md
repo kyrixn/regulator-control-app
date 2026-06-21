@@ -42,25 +42,15 @@ python app.py /dev/ttyACM0    # explicit port
 Then open <http://localhost:5000> (or the host machine's IP from another
 device on the same network).
 
-### Without hardware (mock mode)
-
-```bash
-python app.py --mock
-```
-
-Mock mode simulates the Arduino so the UI can be developed/tested without the
-Giga R1 attached.
-
 ### Options
 
 ```
-python app.py [port] [--mock] [--host HOST] [--http-port PORT]
+python app.py [port] [--host HOST] [--http-port PORT]
 ```
 
 | Option        | Default   | Description                          |
 |---------------|-----------|--------------------------------------|
 | `port`        | auto      | Serial port (e.g. `/dev/ttyACM0`)    |
-| `--mock`      | off       | Run without hardware                 |
 | `--host`      | `0.0.0.0` | Web server bind host                 |
 | `--http-port` | `5000`    | Web server port                      |
 

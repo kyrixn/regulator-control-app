@@ -17,8 +17,7 @@ The serial layer lives in valve_controller.ValveController (Giga R1 / vc2.ino).
 Usage:
     python app.py [port]
     python app.py /dev/ttyACM0
-    python app.py --mock            # run without hardware
-    python app.py --mock --port 8000
+    python app.py /dev/ttyACM0 --http-port 8000
 """
 
 import argparse
@@ -28,7 +27,7 @@ import time
 from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO
 
-from valve_controller import ValveController, NUM_VALVES, MAX_INPUT_VALUE
+from valve_controller import ValveController, MAX_INPUT_VALUE
 
 
 app = Flask(__name__)
@@ -191,8 +190,6 @@ def main():
     parser = argparse.ArgumentParser(description="vc2 16-valve web controller")
     parser.add_argument('port', nargs='?', default=None,
                         help='Serial port (e.g. /dev/ttyACM0)')
-    parser.add_argument('--mock', action='store_true',
-                        help='Run without hardware (simulated valves)')
     parser.add_argument('--host', default='0.0.0.0', help='Web server host')
     parser.add_argument('--http-port', type=int, default=5000,
                         help='Web server port (default 5000)')
@@ -202,9 +199,9 @@ def main():
     print("   16-VALVE CONTROLLER (Web App)")
     print("=" * 65)
 
-    controller = ValveController(port=args.port, mock=args.mock)
+    controller = ValveController(port=args.port)
     if not controller.connected:
-        print("[ERR] Failed to connect. Use --mock to run without hardware.")
+        print("[ERR] Failed to connect to the Arduino.")
         return
 
     print(f"\n[OK] Serving on http://{args.host}:{args.http_port}")

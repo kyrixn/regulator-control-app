@@ -147,10 +147,10 @@ function renderState(state) {
     text.textContent = 'DISCONNECTED';
   } else if (state.active > 0) {
     pill.className = 'status-pill active';
-    text.textContent = `ACTIVE (${state.active})${state.mock ? ' · MOCK' : ''}`;
+    text.textContent = `ACTIVE (${state.active})`;
   } else {
     pill.className = 'status-pill';
-    text.textContent = `IDLE${state.mock ? ' · MOCK' : ''}`;
+    text.textContent = 'IDLE';
   }
 }
 

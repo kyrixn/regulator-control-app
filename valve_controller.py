@@ -18,8 +18,6 @@ Arduino command set (Serial @ 115200):
   s                    Emergency stop (all valves off)
   ?                    Query status of all valves
   p                    Ping test
-
-A --mock mode is provided so the web UI can run without hardware attached.
 """
 
 import re
@@ -49,12 +47,11 @@ def mv_to_bar(mV):
 class ValveController:
     """16-valve serial interface (headless)."""
 
-    def __init__(self, port=None, baudrate=115200, mock=False):
+    def __init__(self, port=None, baudrate=115200):
         self.ser = None
         self.baudrate = baudrate
         self.running = False
         self.read_thread = None
-        self.mock = mock
         self.port_name = None
 
         # Valve readings (commanded mV): {valve_id: mV}
@@ -66,9 +63,7 @@ class ValveController:
         # Recent Arduino / app messages for the activity log.
         self.message_queue = deque(maxlen=50)
 
-        if self.mock:
-            self._start_mock()
-        elif port:
+        if port:
             self.connect(port)
         else:
             self.auto_connect()
@@ -76,14 +71,6 @@ class ValveController:
     # ------------------------------------------------------------------
     # Connection
     # ------------------------------------------------------------------
-
-    def _start_mock(self):
-        """Pretend to be connected; commands just update local state."""
-        self.running = True
-        self.port_name = "MOCK"
-        self.message_queue.append("=== MOCK MODE (no hardware) ===")
-        self.message_queue.append("Mode: VOLTAGE (mV)")
-        self.message_queue.append("Layout: V0-V7 on Wire, V8-V15 on Wire1")
 
     @staticmethod
     def list_ports():
@@ -135,7 +122,7 @@ class ValveController:
 
     @property
     def connected(self):
-        return self.running and (self.mock or self.ser is not None)
+        return self.running and self.ser is not None
 
     # ------------------------------------------------------------------
     # Serial read / parse
@@ -219,10 +206,6 @@ class ValveController:
 
     def send(self, command):
         """Send a raw command line to the Arduino."""
-        if self.mock:
-            self._mock_handle(command)
-            return True
-
         if not self.ser:
             self.message_queue.append("[ERR] Not connected!")
             return False
@@ -233,55 +216,6 @@ class ValveController:
         except Exception as e:
             self.message_queue.append(f"[ERR] Send error: {e}")
             return False
-
-    def _mock_handle(self, command):
-        """Simulate the Arduino's response to a command (mock mode)."""
-        cmd = command.strip().lower()
-
-        if cmd == "s":
-            with self.display_lock:
-                self.valve_data.clear()
-            self.message_queue.append("** EMERGENCY STOP - All valves OFF **")
-            return
-
-        if cmd == "p":
-            self.message_queue.append("PONG - Arduino connected (mock)")
-            return
-
-        if cmd == "?":
-            with self.display_lock:
-                parts = []
-                for i in range(NUM_VALVES):
-                    parts.append(f"V{i}={self.valve_data.get(i, 0)}")
-            self.message_queue.append(" | ".join(parts))
-            return
-
-        # valve,value[,valve,value...] or valve,off
-        parts = command.split(',')
-        acks = []
-        i = 0
-        while i + 1 < len(parts):
-            try:
-                v = int(parts[i])
-            except ValueError:
-                break
-            val_str = parts[i + 1].strip().lower()
-            if val_str == 'off':
-                with self.display_lock:
-                    self.valve_data.pop(v, None)
-                acks.append(f"V{v} OFF")
-            else:
-                try:
-                    val = int(val_str)
-                except ValueError:
-                    break
-                val = max(0, min(val, 10000))
-                with self.display_lock:
-                    self.valve_data[v] = val
-                acks.append(f"V{v}={val}")
-            i += 2
-        if acks:
-            self.message_queue.append("OK: " + " | ".join(acks))
 
     # ------------------------------------------------------------------
     # Control commands
@@ -349,7 +283,6 @@ class ValveController:
             }
         return {
             "connected": self.connected,
-            "mock": self.mock,
             "port": self.port_name,
             "num_valves": NUM_VALVES,
             "max_value": MAX_INPUT_VALUE,
