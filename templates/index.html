@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>16-Valve Controller</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <h1>16-Valve Controller <span class="subtitle">(Web)</span></h1>
+    <div class="status-pill" id="statusPill">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">CONNECTING…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="rows">
+      <div class="row-block">
+        <h2 class="row-title">Valves 0–7 <span class="bus">(Wire)</span></h2>
+        <div class="valve-row" id="row0"></div>
+      </div>
+      <div class="row-block">
+        <h2 class="row-title">Valves 8–15 <span class="bus">(Wire1)</span></h2>
+        <div class="valve-row" id="row1"></div>
+      </div>
+    </section>
+
+    <aside class="controls">
+      <button id="btnStop" class="btn btn-stop">STOP</button>
+      <button id="btnApply" class="btn btn-apply">APPLY ALL</button>
+      <button id="btnStatus" class="btn btn-accent">? STATUS</button>
+      <button id="btnPing" class="btn btn-accent">PING</button>
+    </aside>
+  </main>
+
+  <p class="hint">
+    Enter fires that valve (single). Click-away keeps text but doesn't fire.
+    APPLY ALL fires every non-empty box in one batch. Type <code>off</code> to
+    turn a valve off. Max <span id="maxHint">4000</span>.
+  </p>
+
+  <section class="log-wrap">
+    <h3>Activity</h3>
+    <pre id="log" class="log"></pre>
+  </section>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
