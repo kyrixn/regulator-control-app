@@ -32,6 +32,7 @@ import serial.tools.list_ports
 NUM_VALVES = 16
 ROW_SIZE = 8
 MAX_INPUT_VALUE = 4000  # mV or kPa — never send values above this
+RAMP_STEP = 0.04        # seconds between setpoints while ramping (~25 Hz)
 
 
 def mv_to_bar(mV):
@@ -62,6 +63,12 @@ class ValveController:
 
         # Recent Arduino / app messages for the activity log.
         self.message_queue = deque(maxlen=50)
+
+        # Active linear ramps: valve -> dict(start_val, target, off, start_t, end_t).
+        # A background ticker thread streams interpolated setpoints over serial.
+        self.ramps = {}
+        self.ramp_lock = threading.Lock()
+        self.ramp_thread = None
 
         if port:
             self.connect(port)
@@ -119,6 +126,9 @@ class ValveController:
         self.running = True
         self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
         self.read_thread.start()
+
+        self.ramp_thread = threading.Thread(target=self._ramp_loop, daemon=True)
+        self.ramp_thread.start()
 
     @property
     def connected(self):
@@ -218,6 +228,69 @@ class ValveController:
             return False
 
     # ------------------------------------------------------------------
+    # Ramping (linear setpoint streaming)
+    # ------------------------------------------------------------------
+
+    def _current_mV(self, valve):
+        """Last commanded mV for a valve (0 if currently off/unknown)."""
+        with self.display_lock:
+            return self.valve_data.get(valve, 0)
+
+    def _start_ramp(self, valve, target, off, duration):
+        """Begin (or restart) a linear ramp on a valve over `duration` seconds."""
+        now = time.time()
+        with self.ramp_lock:
+            self.ramps[valve] = {
+                'start_val': self._current_mV(valve),
+                'target': int(target),
+                'off': bool(off),
+                'start_t': now,
+                'end_t': now + max(0.0, float(duration)),
+            }
+
+    def _cancel_ramp(self, valve):
+        with self.ramp_lock:
+            self.ramps.pop(valve, None)
+
+    def _cancel_all_ramps(self):
+        with self.ramp_lock:
+            self.ramps.clear()
+
+    def _ramp_loop(self):
+        """Stream interpolated setpoints for all active ramps until they finish."""
+        while self.running:
+            time.sleep(RAMP_STEP)
+            now = time.time()
+            batch = []        # (valve, value-or-'off')
+            finished = []
+
+            with self.ramp_lock:
+                if not self.ramps:
+                    continue
+                for valve, r in self.ramps.items():
+                    dur = r['end_t'] - r['start_t']
+                    frac = 1.0 if dur <= 0 else (now - r['start_t']) / dur
+                    if frac >= 1.0:
+                        frac = 1.0
+                        finished.append(valve)
+                        batch.append((valve, 'off' if r['off'] else r['target']))
+                    else:
+                        cur = int(round(
+                            r['start_val'] + (r['target'] - r['start_val']) * frac
+                        ))
+                        batch.append((valve, cur))
+                for valve in finished:
+                    self.ramps.pop(valve, None)
+
+            if batch:
+                cmd = ",".join(f"{v},{val}" for v, val in batch)
+                self.send(cmd)
+                for v, val in batch:
+                    if val == 'off':
+                        with self.display_lock:
+                            self.valve_data.pop(v, None)
+
+    # ------------------------------------------------------------------
     # Control commands
     # ------------------------------------------------------------------
 
@@ -230,34 +303,59 @@ class ValveController:
             return False
         return True
 
-    def set_valve(self, valve, value):
-        """Set a single valve to value (mV or kPa depending on Arduino mode)."""
+    def set_valve(self, valve, value, ramp=0.0):
+        """Set a single valve to value (mV or kPa depending on Arduino mode).
+
+        If ramp > 0, linearly ramp from the current value to `value` over
+        that many seconds instead of jumping immediately.
+        """
         if not self._value_within_limit(value):
             return False
+        if ramp and ramp > 0:
+            self._start_ramp(valve, int(value), off=False, duration=ramp)
+            return True
+        self._cancel_ramp(valve)
         return self.send(f"{valve},{value}")
 
-    def set_multiple_valves(self, valve_value_pairs):
+    def set_multiple_valves(self, valve_value_pairs, ramp=0.0):
         """Set multiple valves in one batched command.
 
         valve_value_pairs: list of (valve, value) where value is an int
         (mV / kPa) or the string 'off'.
+
+        If ramp > 0, every valve in the batch linearly ramps from its current
+        value to its target over that many seconds, simultaneously.
         """
         for _, val in valve_value_pairs:
             if val == 'off':
                 continue
             if not self._value_within_limit(val):
                 return False
+        if ramp and ramp > 0:
+            for v, val in valve_value_pairs:
+                if val == 'off':
+                    self._start_ramp(v, 0, off=True, duration=ramp)
+                else:
+                    self._start_ramp(v, int(val), off=False, duration=ramp)
+            return True
+        for v, _ in valve_value_pairs:
+            self._cancel_ramp(v)
         cmd = ",".join(f"{v},{val}" for v, val in valve_value_pairs)
         return self.send(cmd)
 
-    def valve_off(self, valve):
-        """Turn off a specific valve."""
+    def valve_off(self, valve, ramp=0.0):
+        """Turn off a specific valve (optionally ramping down to 0 first)."""
+        if ramp and ramp > 0:
+            self._start_ramp(valve, 0, off=True, duration=ramp)
+            return True
+        self._cancel_ramp(valve)
         with self.display_lock:
             self.valve_data.pop(valve, None)
         return self.send(f"{valve},off")
 
     def emergency_stop(self):
-        """Emergency stop - all valves off."""
+        """Emergency stop - all valves off (cancels any ramps in progress)."""
+        self._cancel_all_ramps()
         with self.display_lock:
             self.valve_data.clear()
         return self.send("s")
@@ -300,8 +398,11 @@ class ValveController:
     def close(self):
         """Close the connection."""
         self.running = False
+        self._cancel_all_ramps()
         if self.read_thread:
             self.read_thread.join(timeout=1)
+        if self.ramp_thread:
+            self.ramp_thread.join(timeout=1)
         if self.ser:
             self.ser.close()
             print("\n[OK] Connection closed")

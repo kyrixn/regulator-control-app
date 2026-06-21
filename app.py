@@ -96,25 +96,35 @@ def on_connect():
         socketio.emit('state', controller.get_state())
 
 
+def _parse_ramp(data):
+    """Ramp duration in seconds from a payload; 0 (instant) if blank/invalid."""
+    try:
+        ramp = float(data.get('ramp', 0) or 0)
+    except (ValueError, TypeError):
+        return 0.0
+    return ramp if ramp > 0 else 0.0
+
+
 @socketio.on('set_valve')
 def on_set_valve(data):
-    """data = {valve: int, value: int | 'off'}"""
+    """data = {valve: int, value: int | 'off', ramp: float}"""
     if controller is None:
         return
     valve = int(data.get('valve'))
     value = data.get('value')
+    ramp = _parse_ramp(data)
     if isinstance(value, str) and value.strip().lower() in ('off', 'o', 'x'):
-        controller.valve_off(valve)
+        controller.valve_off(valve, ramp=ramp)
         return
     try:
-        controller.set_valve(valve, int(value))
+        controller.set_valve(valve, int(value), ramp=ramp)
     except (ValueError, TypeError):
         controller.message_queue.append(f"[ERR] V{valve}: invalid value '{value}'")
 
 
 @socketio.on('apply_all')
 def on_apply_all(data):
-    """data = {entries: [{valve:int, value:int|'off'}, ...]}
+    """data = {entries: [{valve:int, value:int|'off'}, ...], ramp: float}
 
     Validates everything first; if anything is invalid the whole batch is
     aborted, mirroring vc2_gui.py's APPLY ALL behaviour.
@@ -151,14 +161,16 @@ def on_apply_all(data):
         controller.message_queue.append("[INFO] APPLY ALL: no values to apply")
         return
 
-    if controller.set_multiple_valves(pairs):
-        controller.message_queue.append(f"APPLY ALL: {len(pairs)} valves")
+    ramp = _parse_ramp(data)
+    if controller.set_multiple_valves(pairs, ramp=ramp):
+        suffix = f" over {ramp:g}s" if ramp else ""
+        controller.message_queue.append(f"APPLY ALL: {len(pairs)} valves{suffix}")
 
 
 @socketio.on('valve_off')
 def on_valve_off(data):
     if controller is not None:
-        controller.valve_off(int(data.get('valve')))
+        controller.valve_off(int(data.get('valve')), ramp=_parse_ramp(data))
 
 
 @socketio.on('stop')

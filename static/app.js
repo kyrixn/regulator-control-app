@@ -54,12 +54,22 @@ function buildValves() {
 // ------------------------------------------------------------------
 // Actions
 // ------------------------------------------------------------------
+
+// Ramp duration (seconds) from the TIME box; 0 (instant) if blank/invalid.
+function getRamp() {
+  const raw = document.getElementById('timeInput').value.trim();
+  if (raw === '') return 0;
+  const t = parseFloat(raw);
+  return Number.isFinite(t) && t > 0 ? t : 0;
+}
+
 function submitSingle(valve, input) {
   const t = input.value.trim().toLowerCase();
   if (t === '') return;
+  const ramp = getRamp();
 
   if (t === 'off' || t === 'o' || t === 'x') {
-    socket.emit('set_valve', { valve, value: 'off' });
+    socket.emit('set_valve', { valve, value: 'off', ramp });
     input.value = '';
     return;
   }
@@ -73,7 +83,7 @@ function submitSingle(valve, input) {
     logLine(`[ERR] V${valve}: ${value} exceeds limit (max ${MAX_VALUE})`);
     return;
   }
-  socket.emit('set_valve', { valve, value });
+  socket.emit('set_valve', { valve, value, ramp });
   input.value = '';
 }
 
@@ -108,14 +118,13 @@ function applyAll() {
     logLine('[INFO] APPLY ALL: no values to apply');
     return;
   }
-  socket.emit('apply_all', { entries });
+  socket.emit('apply_all', { entries, ramp: getRamp() });
   toClear.forEach((i) => { valveEls[i].input.value = ''; });
 }
 
 document.getElementById('btnStop').addEventListener('click', () => socket.emit('stop'));
 document.getElementById('btnApply').addEventListener('click', applyAll);
 document.getElementById('btnStatus').addEventListener('click', () => socket.emit('status'));
-document.getElementById('btnPing').addEventListener('click', () => socket.emit('ping_arduino'));
 
 // ------------------------------------------------------------------
 // Rendering

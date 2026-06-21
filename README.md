@@ -18,9 +18,13 @@ command protocol as the original Python scripts.
 - Live bar display of all 16 valves (mV + converted bar pressure)
 - Per-valve input box — type a value + **Enter** to fire that valve, or `off`
 - **APPLY ALL** — fire every non-empty box in one batched serial command
-- **STOP** — emergency stop (all valves off)
+- **TIME (s)** — ramp duration. Blank or `0` fires instantly (default
+  behaviour); a positive value linearly ramps each commanded valve from its
+  current value to the target over that many seconds. Applies to both single
+  sets and APPLY ALL. Ramps are streamed as intermediate setpoints over serial
+  (~25 Hz) from the backend, since the firmware sets the DAC directly.
+- **STOP** — emergency stop (all valves off; cancels any ramps in progress)
 - **? STATUS** — query all valve states
-- **PING** — ping the Arduino
 - Activity log of Arduino responses
 - 4000 max value enforced (client + server), matching the original scripts
 

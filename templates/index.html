@@ -31,14 +31,19 @@
       <button id="btnStop" class="btn btn-stop">STOP</button>
       <button id="btnApply" class="btn btn-apply">APPLY ALL</button>
       <button id="btnStatus" class="btn btn-accent">? STATUS</button>
-      <button id="btnPing" class="btn btn-accent">PING</button>
+      <div class="time-field">
+        <label for="timeInput">TIME (s)</label>
+        <input type="text" id="timeInput" placeholder="0" inputmode="decimal">
+      </div>
     </aside>
   </main>
 
   <p class="hint">
     Enter fires that valve (single). Click-away keeps text but doesn't fire.
     APPLY ALL fires every non-empty box in one batch. Type <code>off</code> to
-    turn a valve off. Max <span id="maxHint">4000</span>.
+    turn a valve off. <code>TIME</code> = ramp duration in seconds (blank/0 =
+    instant; otherwise the value ramps linearly to target over that time).
+    Max <span id="maxHint">4000</span>.
   </p>
 
   <section class="log-wrap">

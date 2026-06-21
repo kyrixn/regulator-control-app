@@ -158,6 +158,33 @@ main {
 .btn-accent { background: var(--accent); font-size: 13px; padding: 14px 0; font-weight: 400; }
 .btn-accent:hover { background: var(--accent-h); }
 
+.time-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.time-field label {
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+.time-field input {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 6px 6px;
+  text-align: center;
+  font-family: inherit;
+  font-size: 15px;
+}
+.time-field input:focus { outline: none; border-color: var(--valve-bar); }
+
 .hint { color: var(--text-dim); font-size: 12px; margin: 12px 0 8px; flex: none; }
 .hint code { color: var(--valve-bar); }
 
