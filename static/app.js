@@ -1,12 +1,13 @@
-// Front-end for the vc2 16-valve web controller.
-// Mirrors the behaviour of vc2/vc2_gui.py over a SocketIO connection.
+// Front-end for the vc2 pneumatic station web app.
+// Handles BOTH the valve regulator (Giga R1) and the RS-485 encoders,
+// which arrive together in a single {valves, encoders} state message.
 
 const NUM_VALVES = 16;
 const Y_MAX = 10500;          // matches the matplotlib GUI y-limit (mV)
 let MAX_VALUE = 4000;         // overwritten by server state
 
 const socket = io();
-const valveEls = [];          // index -> { input, bar, label, cell }
+const valveEls = [];          // index -> { input, bar, label, cell, id }
 
 // ------------------------------------------------------------------
 // Build the two rows of 8 valves
@@ -36,9 +37,7 @@ function buildValves() {
       input.type = 'text';
       input.placeholder = '–';
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          submitSingle(i, input);
-        }
+        if (e.key === 'Enter') submitSingle(i, input);
       });
 
       cell.appendChild(barArea);
@@ -52,10 +51,8 @@ function buildValves() {
 }
 
 // ------------------------------------------------------------------
-// Actions
+// Valve actions
 // ------------------------------------------------------------------
-
-// Ramp duration (seconds) from the TIME box; 0 (instant) if blank/invalid.
 function getRamp() {
   const raw = document.getElementById('timeInput').value.trim();
   if (raw === '') return 0;
@@ -73,7 +70,6 @@ function submitSingle(valve, input) {
     input.value = '';
     return;
   }
-
   const value = parseInt(t, 10);
   if (Number.isNaN(value)) {
     logLine(`[ERR] V${valve}: invalid value '${input.value}'`);
@@ -127,13 +123,31 @@ document.getElementById('btnApply').addEventListener('click', applyAll);
 document.getElementById('btnStatus').addEventListener('click', () => socket.emit('status'));
 
 // ------------------------------------------------------------------
-// Rendering
+// Encoder actions
 // ------------------------------------------------------------------
-function renderState(state) {
-  MAX_VALUE = state.max_value || MAX_VALUE;
+document.getElementById('btnZero').addEventListener('click', () => socket.emit('zero'));
+document.getElementById('btnClear').addEventListener('click', () => socket.emit('clear_zero'));
+document.getElementById('btnRescan').addEventListener('click', () => socket.emit('rescan'));
+
+// ------------------------------------------------------------------
+// Rendering — valves
+// ------------------------------------------------------------------
+function renderValves(vstate) {
+  const pill = document.getElementById('valvePill');
+  const text = document.getElementById('valveText');
+  const panel = document.getElementById('valvePanel');
+
+  if (!vstate) {
+    panel.classList.add('disabled');
+    pill.className = 'status-pill disconnected';
+    text.textContent = 'VALVES OFF';
+    return;
+  }
+  panel.classList.remove('disabled');
+  MAX_VALUE = vstate.max_value || MAX_VALUE;
   document.getElementById('maxHint').textContent = MAX_VALUE;
 
-  const valves = state.valves || {};
+  const valves = vstate.valves || {};
   for (let i = 0; i < NUM_VALVES; i++) {
     const el = valveEls[i];
     const v = valves[String(i)];
@@ -149,17 +163,74 @@ function renderState(state) {
     }
   }
 
-  const pill = document.getElementById('statusPill');
-  const text = document.getElementById('statusText');
-  if (!state.connected) {
+  if (!vstate.connected) {
     pill.className = 'status-pill disconnected';
-    text.textContent = 'DISCONNECTED';
-  } else if (state.active > 0) {
+    text.textContent = 'VALVES LOST';
+  } else if (vstate.active > 0) {
     pill.className = 'status-pill active';
-    text.textContent = `ACTIVE (${state.active})`;
+    text.textContent = `VALVES (${vstate.active})`;
   } else {
     pill.className = 'status-pill';
-    text.textContent = 'IDLE';
+    text.textContent = 'VALVES IDLE';
+  }
+}
+
+// ------------------------------------------------------------------
+// Rendering — encoders
+// ------------------------------------------------------------------
+function fmt(v) { return (v === null || v === undefined) ? '–' : v; }
+
+function renderEncoders(estate) {
+  const pill = document.getElementById('encPill');
+  const text = document.getElementById('encText');
+  const panel = document.getElementById('encPanel');
+  const meta = document.getElementById('encMeta');
+  const tbody = document.getElementById('encRows');
+
+  if (!estate) {
+    panel.classList.add('disabled');
+    pill.className = 'status-pill disconnected';
+    text.textContent = 'ENCODERS OFF';
+    meta.textContent = 'RS-485 adapter not opened.';
+    return;
+  }
+  panel.classList.remove('disabled');
+
+  const range = estate.scanned_range || [];
+  meta.textContent =
+    `Port ${estate.port || '?'}  ·  ${estate.baudrate || '?'} 8${estate.parity || 'N'}1  ·  ` +
+    `Scanned ${range[0]}–${range[1]}  ·  Counts/turn ${estate.counts_per_turn}  ·  ` +
+    `Online ${estate.online || 0}  ·  Zeroed ${estate.zeroed || 0}`;
+
+  const encoders = estate.encoders || [];
+  if (!encoders.length) {
+    tbody.innerHTML = '<tr class="empty"><td colspan="9">' +
+      'No encoders found in the scanned slave-id range.</td></tr>';
+  } else {
+    tbody.innerHTML = encoders.map((e) => {
+      const cls = e.online ? 'online' : 'offline';
+      const stateTxt = e.online ? 'ONLINE' : 'OFFLINE';
+      const zeroBadge = e.zeroed ? ' <span class="zbadge">Z</span>' : '';
+      return `<tr class="${cls}">
+        <td class="num id">${e.slave}</td>
+        <td class="state">${stateTxt}${zeroBadge}</td>
+        <td class="num pos">${fmt(e.display_position)}</td>
+        <td class="num">${fmt(e.absolute_position)}</td>
+        <td class="num">${fmt(e.turns)}</td>
+        <td class="num">${fmt(e.speed)}</td>
+        <td class="num">${fmt(e.status_code)}</td>
+        <td class="num">${fmt(e.error_count)}</td>
+        <td class="msg">${e.message || ''}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  if ((estate.online || 0) > 0) {
+    pill.className = 'status-pill active';
+    text.textContent = `ENCODERS (${estate.online})`;
+  } else {
+    pill.className = 'status-pill';
+    text.textContent = 'ENCODERS SCAN…';
   }
 }
 
@@ -178,12 +249,18 @@ function logLine(line) {
 // ------------------------------------------------------------------
 // Socket wiring
 // ------------------------------------------------------------------
-socket.on('state', renderState);
+socket.on('state', (state) => {
+  renderValves(state.valves);
+  renderEncoders(state.encoders);
+});
 socket.on('messages', (data) => (data.lines || []).forEach(logLine));
 socket.on('connect', () => logLine('[web] connected to server'));
 socket.on('disconnect', () => {
-  document.getElementById('statusPill').className = 'status-pill disconnected';
-  document.getElementById('statusText').textContent = 'SERVER LOST';
+  for (const id of ['valvePill', 'encPill']) {
+    document.getElementById(id).className = 'status-pill disconnected';
+  }
+  document.getElementById('valveText').textContent = 'SERVER LOST';
+  document.getElementById('encText').textContent = 'SERVER LOST';
 });
 
 buildValves();

@@ -3,48 +3,88 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>16-Valve Controller</title>
+  <title>VC2 Pneumatic Station</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <header class="topbar">
-    <h1>16-Valve Controller <span class="subtitle">(Web)</span></h1>
-    <div class="status-pill" id="statusPill">
-      <span class="dot" id="statusDot"></span>
-      <span id="statusText">CONNECTING…</span>
+    <h1>VC2 Pneumatic Station <span class="subtitle">(Web)</span></h1>
+    <div class="pills">
+      <div class="status-pill" id="valvePill">
+        <span class="dot"></span><span id="valveText">VALVES …</span>
+      </div>
+      <div class="status-pill" id="encPill">
+        <span class="dot"></span><span id="encText">ENCODERS …</span>
+      </div>
     </div>
   </header>
 
-  <main>
-    <section class="rows">
-      <div class="row-block">
-        <h2 class="row-title">Valves 0–7 <span class="bus">(Wire)</span></h2>
-        <div class="valve-row" id="row0"></div>
+  <!-- ===================== VALVES (Giga R1) ===================== -->
+  <section class="panel" id="valvePanel">
+    <h2 class="panel-title">Valves <span class="src">— Arduino Giga R1</span></h2>
+    <div class="panel-body">
+      <div class="rows">
+        <div class="row-block">
+          <h3 class="row-title">Valves 0–7 <span class="bus">(Wire)</span></h3>
+          <div class="valve-row" id="row0"></div>
+        </div>
+        <div class="row-block">
+          <h3 class="row-title">Valves 8–15 <span class="bus">(Wire1)</span></h3>
+          <div class="valve-row" id="row1"></div>
+        </div>
       </div>
-      <div class="row-block">
-        <h2 class="row-title">Valves 8–15 <span class="bus">(Wire1)</span></h2>
-        <div class="valve-row" id="row1"></div>
-      </div>
-    </section>
+      <aside class="controls">
+        <button id="btnStop" class="btn btn-stop">STOP</button>
+        <button id="btnApply" class="btn btn-apply">APPLY ALL</button>
+        <button id="btnStatus" class="btn btn-accent">? STATUS</button>
+        <div class="time-field">
+          <label for="timeInput">TIME (s)</label>
+          <input type="text" id="timeInput" placeholder="0" inputmode="decimal">
+        </div>
+      </aside>
+    </div>
+    <p class="hint">
+      Enter fires that valve. APPLY ALL fires every non-empty box in one batch.
+      Type <code>off</code> to turn a valve off. <code>TIME</code> = ramp
+      duration in seconds (blank/0 = instant). Max <span id="maxHint">4000</span>.
+    </p>
+  </section>
 
-    <aside class="controls">
-      <button id="btnStop" class="btn btn-stop">STOP</button>
-      <button id="btnApply" class="btn btn-apply">APPLY ALL</button>
-      <button id="btnStatus" class="btn btn-accent">? STATUS</button>
-      <div class="time-field">
-        <label for="timeInput">TIME (s)</label>
-        <input type="text" id="timeInput" placeholder="0" inputmode="decimal">
+  <!-- ===================== ENCODERS (RS-485) ===================== -->
+  <section class="panel" id="encPanel">
+    <h2 class="panel-title">Encoders <span class="src">— GJW over RS-485</span></h2>
+    <div class="panel-body">
+      <div class="table-wrap">
+        <div class="meta" id="encMeta">Waiting for scan…</div>
+        <div class="scroll">
+          <table class="enc-table">
+            <thead>
+              <tr>
+                <th class="num">ID</th><th>STATE</th>
+                <th class="num">POSITION</th><th class="num">ABS POSITION</th>
+                <th class="num">TURNS</th><th class="num">SPEED</th>
+                <th class="num">STATUS</th>
+                <th class="num">ERRORS</th><th>MESSAGE</th>
+              </tr>
+            </thead>
+            <tbody id="encRows">
+              <tr class="empty"><td colspan="9">No encoders yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
-    </aside>
-  </main>
-
-  <p class="hint">
-    Enter fires that valve (single). Click-away keeps text but doesn't fire.
-    APPLY ALL fires every non-empty box in one batch. Type <code>off</code> to
-    turn a valve off. <code>TIME</code> = ramp duration in seconds (blank/0 =
-    instant; otherwise the value ramps linearly to target over that time).
-    Max <span id="maxHint">4000</span>.
-  </p>
+      <aside class="controls">
+        <button id="btnZero" class="btn btn-apply">ZERO ALL</button>
+        <button id="btnClear" class="btn btn-accent">CLEAR ZERO</button>
+        <button id="btnRescan" class="btn btn-accent">RESCAN</button>
+      </aside>
+    </div>
+    <p class="hint">
+      <strong>POSITION</strong> is relative to the last <code>ZERO ALL</code>;
+      <strong>ABS POSITION</strong> is the raw multi-turn count.
+      <code>RESCAN</code> re-sweeps the slave-id range.
+    </p>
+  </section>
 
   <section class="log-wrap">
     <h3>Activity</h3>

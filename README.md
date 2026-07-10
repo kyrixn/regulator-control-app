@@ -1,32 +1,37 @@
-# vc2_webapp
+# vc2_webapp — valves + RS-485 encoders
 
-Browser-based controller for the **vc2 16-valve pneumatic station**. It is a
-web reimplementation of the matplotlib GUI (`vc2/vc2_gui.py`), providing the
-same controls from any browser on the network.
+> **Branch `rs485-encoder-reader`.** The `main` branch is valve-only. This
+> branch drives **both serial devices of the station at once**: the Arduino
+> Giga R1 valve regulator *and* a USB↔RS-485 adapter reading GJW encoders —
+> two ports, one browser page.
 
-The firmware (`vc2/vc2.ino`) runs on an **Arduino Giga R1**, which drives 16
-GP8403 DACs (0–10 V) across two I2C buses:
+The encoder half is a port of the `rs485-reader` project's terminal dashboard
+(`gjw_encoder_dashboard.py`), which originally ran on **Windows** (COM ports +
+`msvcrt` keys). Here it runs alongside the valve controller on Linux/Windows,
+with the display and zeroing moved into the browser.
 
-- Valves **0–7** on `Wire` (SDA/SCL)
-- Valves **8–15** on `Wire1` (SDA1/SCL1)
+## Two devices, two ports
 
-The web app talks to the Giga R1 over USB serial @115200 using the exact same
-command protocol as the original Python scripts.
+| Device                         | Role          | Enumerates as (this station)          |
+|--------------------------------|---------------|---------------------------------------|
+| Arduino Giga R1 (regulator)    | Valve control | `/dev/ttyACM0` — `Arduino Giga` (2341) |
+| USB↔RS-485 adapter             | Encoder read  | `/dev/ttyACM1` — `USB Single Serial` (WCH 1A86) |
+
+Both enumerate as `ttyACM*` here, so the app **auto-detects by device
+identity** (VID / product string), not by port name — the Giga is matched by
+`Arduino`/`Giga`/`2341`, the adapter by known bridge chips (WCH/FTDI/CP210x) or
+a generic "USB serial". Pass `--valve-port` / `--rs485-port` to override, and
+`--no-valves` / `--no-encoders` to run just one side.
 
 ## Features
 
-- Live bar display of all 16 valves (mV + converted bar pressure)
-- Per-valve input box — type a value + **Enter** to fire that valve, or `off`
-- **APPLY ALL** — fire every non-empty box in one batched serial command
-- **TIME (s)** — ramp duration. Blank or `0` fires instantly (default
-  behaviour); a positive value linearly ramps each commanded valve from its
-  current value to the target over that many seconds. Applies to both single
-  sets and APPLY ALL. Ramps are streamed as intermediate setpoints over serial
-  (~25 Hz) from the backend, since the firmware sets the DAC directly.
-- **STOP** — emergency stop (all valves off; cancels any ramps in progress)
-- **? STATUS** — query all valve states
-- Activity log of Arduino responses
-- 4000 max value enforced (client + server), matching the original scripts
+**Valves (Giga R1)** — unchanged from `main`: live bar display of all 16
+valves, per-valve set boxes, APPLY ALL, STOP, ? STATUS, and TIME ramping.
+
+**Encoders (RS-485)** — scans slave ids (default **50–80**) for GJW encoders,
+then live-polls the ones that answer, showing display position (relative to
+zero), absolute multi-turn position, turns, speed, status and error count. **ZERO ALL** captures the current position as zero, **CLEAR ZERO**
+returns to absolute, **RESCAN** re-sweeps the id range.
 
 ## Install
 
@@ -36,53 +41,49 @@ pip install -r requirements.txt
 
 ## Run
 
-With the Giga R1 connected over USB:
-
 ```bash
-python app.py                 # auto-detect serial port
-python app.py /dev/ttyACM0    # explicit port
+python app.py                                        # auto-detect both ports
+python app.py --valve-port /dev/ttyACM0 --rs485-port /dev/ttyACM1
+python app.py --rs485-port /dev/ttyACM1 --no-valves  # encoders only
+python app.py --ids 50-80 --baud 115200 --parity N
 ```
 
-Then open <http://localhost:5000> (or the host machine's IP from another
-device on the same network).
+Then open <http://localhost:5000>.
 
 ### Options
 
-```
-python app.py [port] [--host HOST] [--http-port PORT]
-```
+| Option              | Default   | Description                                     |
+|---------------------|-----------|-------------------------------------------------|
+| `--valve-port`      | auto      | Giga R1 regulator port                          |
+| `--rs485-port`      | auto      | USB↔RS-485 adapter port                         |
+| `--no-valves`       | off       | Don't open the valve regulator                  |
+| `--no-encoders`     | off       | Don't open the RS-485 encoder bus               |
+| `--ids`             | `50-80`   | Encoder slave ids (ranges + lists: `50-80,90`)  |
+| `--baud`            | `115200`  | RS-485 baud rate                                |
+| `--parity`          | `N`       | RS-485 parity (`N`/`E`/`O`)                      |
+| `--counts-per-turn` | `2097152` | Encoder single-turn resolution                  |
+| `--timeout`         | `0.06`    | RS-485 per-read timeout (s)                      |
+| `--interval`        | `0.2`     | Seconds between encoder poll cycles             |
+| `--host`            | `0.0.0.0` | Web server bind host                            |
+| `--http-port`       | `5000`    | Web server port                                 |
 
-| Option        | Default   | Description                          |
-|---------------|-----------|--------------------------------------|
-| `port`        | auto      | Serial port (e.g. `/dev/ttyACM0`)    |
-| `--host`      | `0.0.0.0` | Web server bind host                 |
-| `--http-port` | `5000`    | Web server port                      |
+## Protocols
 
-## Command protocol (handled by the Giga R1 / `vc2.ino`)
-
-| Command               | Meaning                          |
-|-----------------------|----------------------------------|
-| `valve,value`         | Set single valve (e.g. `0,3000`) |
-| `v1,val1,v2,val2,...`  | Set multiple valves              |
-| `valve,off`           | Turn off a valve                 |
-| `s`                   | Emergency stop                   |
-| `?`                   | Query status                     |
-| `p`                   | Ping                             |
-
-## Pressure conversion
-
-The device maps 0–10 V to −100…500 kPa, so:
-
-```
-bar = ((mV / 1000) * 60 - 100) / 100   (clamped to >= 0)
-```
+- **Valves** — Giga R1 running `vc2/vc2.ino` over USB serial @115200
+  (`valve,value`, `s`, `?`, `p`, …). See `valve_controller.py`.
+- **Encoders** — GJW Modbus RTU over RS-485: read-holding-registers (`0x03`)
+  of 16 registers at `0x0380`;
+  `absolute_position = turns × counts_per_turn + single_turn_position`.
+  Framing/decoding in `modbus_rtu.py`, serial polling in `encoder_controller.py`.
 
 ## Project layout
 
 ```
-vc2_webapp/
-├── app.py                # Flask + SocketIO server
-├── valve_controller.py   # serial layer (adapted from vc2/vc2_control.py)
+vc2_webapp/  (branch: rs485-encoder-reader)
+├── app.py                  # Flask + SocketIO server, opens both ports
+├── valve_controller.py     # Giga R1 valve serial layer (from main)
+├── encoder_controller.py   # RS-485 encoder serial layer + poll thread
+├── modbus_rtu.py           # pure Modbus RTU + GJW decode (no hardware dep)
 ├── requirements.txt
 ├── templates/index.html
 └── static/{style.css, app.js}
