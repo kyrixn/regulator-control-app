@@ -21,6 +21,7 @@ USB↔RS-485 adapter (typically /dev/ttyUSB0 on Linux, COMx on Windows).
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
@@ -44,6 +45,7 @@ from modbus_rtu import (
 
 DEFAULT_COUNTS_PER_TURN = 2_097_152  # 21-bit single-turn resolution
 DEFAULT_SLAVE_IDS = tuple(range(50, 81))  # matches rs485-reader's 50-80 default
+DEFAULT_DRUM_DIAMETER_MM = 14.0  # draw-wire drum: thread displacement = arc length
 
 
 @dataclass
@@ -98,6 +100,7 @@ class EncoderController:
         parity: str = "N",
         slave_ids: Sequence[int] = DEFAULT_SLAVE_IDS,
         counts_per_turn: int = DEFAULT_COUNTS_PER_TURN,
+        drum_diameter_mm: float = DEFAULT_DRUM_DIAMETER_MM,
         timeout: float = 0.06,
         interval: float = 0.2,
     ):
@@ -106,6 +109,7 @@ class EncoderController:
         self.parity = parity
         self.slave_ids = list(slave_ids)
         self.counts_per_turn = counts_per_turn
+        self.drum_diameter_mm = drum_diameter_mm
         self.timeout = timeout
         self.interval = interval
 
@@ -321,8 +325,23 @@ class EncoderController:
     # State accessors (used by the web layer)
     # ------------------------------------------------------------------
 
+    def _counts_to_mm(self, counts: Optional[int]) -> Optional[float]:
+        """Convert encoder counts to thread displacement in mm.
+
+        The magnet rides a drum of diameter `drum_diameter_mm`; one full turn
+        pays out one circumference of thread, so displacement is the arc length
+        counts / counts_per_turn * pi * diameter.
+        """
+        if counts is None:
+            return None
+        return counts / self.counts_per_turn * math.pi * self.drum_diameter_mm
+
     def get_state(self) -> dict:
-        """Snapshot of encoder state for serialization to the browser."""
+        """Snapshot of encoder state for serialization to the browser.
+
+        The POSITION field is thread displacement in mm (relative to the last
+        zero); every other field keeps its original raw value.
+        """
         with self.state_lock:
             zero_offsets = dict(self.zero_offsets)
             encoders = []
@@ -331,10 +350,12 @@ class EncoderController:
                 offset = zero_offsets.get(slave, 0)
                 display = (None if r.absolute_position is None
                            else r.absolute_position - offset)
+                position_mm = self._counts_to_mm(display)
                 encoders.append({
                     "slave": r.slave,
                     "online": r.online,
-                    "display_position": display,
+                    "position_mm": (None if position_mm is None
+                                    else round(position_mm, 2)),
                     "absolute_position": r.absolute_position,
                     "single_turn_position": r.single_turn_position,
                     "turns": r.turns,
@@ -351,6 +372,7 @@ class EncoderController:
             "baudrate": self.baudrate,
             "parity": self.parity,
             "counts_per_turn": self.counts_per_turn,
+            "drum_diameter_mm": self.drum_diameter_mm,
             "scanned_range": [self.slave_ids[0], self.slave_ids[-1]],
             "encoders": encoders,
             "online": online,

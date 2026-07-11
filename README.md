@@ -28,10 +28,20 @@ a generic "USB serial". Pass `--valve-port` / `--rs485-port` to override, and
 **Valves (Giga R1)** — unchanged from `main`: live bar display of all 16
 valves, per-valve set boxes, APPLY ALL, STOP, ? STATUS, and TIME ramping.
 
-**Encoders (RS-485)** — scans slave ids (default **50–80**) for GJW encoders,
-then live-polls the ones that answer, showing display position (relative to
-zero), absolute multi-turn position, turns, speed, status and error count. **ZERO ALL** captures the current position as zero, **CLEAR ZERO**
-returns to absolute, **RESCAN** re-sweeps the id range.
+**Encoders (RS-485)** — a draw-wire setup: the encoder magnet rides a drum
+(Ø **14 mm** by default) with a thread wound on it, so one turn pays out one
+circumference of thread. The app scans slave ids (default **50–80**) for GJW
+encoders, then live-polls the ones that answer and shows a table per encoder:
+**POSITION** is the thread displacement in **mm to 2 decimals** (relative to
+the last zero); the remaining columns keep their raw values (abs position,
+turns, speed, status, errors, message):
+
+```
+position_mm = (counts − zero) / counts_per_turn × π × drum_diameter
+```
+
+**ZERO ALL** sets the current position to 0, **CLEAR ZERO** returns to
+absolute, **RESCAN** re-sweeps the id range.
 
 ## Install
 
@@ -62,6 +72,7 @@ Then open <http://localhost:5000>.
 | `--baud`            | `115200`  | RS-485 baud rate                                |
 | `--parity`          | `N`       | RS-485 parity (`N`/`E`/`O`)                      |
 | `--counts-per-turn` | `2097152` | Encoder single-turn resolution                  |
+| `--drum-diameter`   | `14.0`    | Draw-wire drum diameter in mm (position scaling) |
 | `--timeout`         | `0.06`    | RS-485 per-read timeout (s)                      |
 | `--interval`        | `0.2`     | Seconds between encoder poll cycles             |
 | `--host`            | `0.0.0.0` | Web server bind host                            |

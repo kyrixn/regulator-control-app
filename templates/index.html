@@ -61,7 +61,7 @@
             <thead>
               <tr>
                 <th class="num">ID</th><th>STATE</th>
-                <th class="num">POSITION</th><th class="num">ABS POSITION</th>
+                <th class="num">POSITION (mm)</th><th class="num">ABS POSITION</th>
                 <th class="num">TURNS</th><th class="num">SPEED</th>
                 <th class="num">STATUS</th>
                 <th class="num">ERRORS</th><th>MESSAGE</th>
@@ -80,9 +80,11 @@
       </aside>
     </div>
     <p class="hint">
-      <strong>POSITION</strong> is relative to the last <code>ZERO ALL</code>;
-      <strong>ABS POSITION</strong> is the raw multi-turn count.
-      <code>RESCAN</code> re-sweeps the slave-id range.
+      <strong>POSITION</strong> is thread displacement in mm relative to the
+      last <code>ZERO ALL</code> (draw-wire drum ⌀<span id="drumHint">14</span> mm).
+      <code>ZERO ALL</code> sets the current position to 0;
+      <code>CLEAR ZERO</code> returns to absolute; <code>RESCAN</code>
+      re-sweeps the slave-id range.
     </p>
   </section>
 

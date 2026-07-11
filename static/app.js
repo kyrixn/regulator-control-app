@@ -197,9 +197,11 @@ function renderEncoders(estate) {
   panel.classList.remove('disabled');
 
   const range = estate.scanned_range || [];
+  const drum = estate.drum_diameter_mm;
+  document.getElementById('drumHint').textContent = drum;
   meta.textContent =
     `Port ${estate.port || '?'}  ·  ${estate.baudrate || '?'} 8${estate.parity || 'N'}1  ·  ` +
-    `Scanned ${range[0]}–${range[1]}  ·  Counts/turn ${estate.counts_per_turn}  ·  ` +
+    `Scanned ${range[0]}–${range[1]}  ·  Drum ⌀${drum} mm  ·  ` +
     `Online ${estate.online || 0}  ·  Zeroed ${estate.zeroed || 0}`;
 
   const encoders = estate.encoders || [];
@@ -211,10 +213,12 @@ function renderEncoders(estate) {
       const cls = e.online ? 'online' : 'offline';
       const stateTxt = e.online ? 'ONLINE' : 'OFFLINE';
       const zeroBadge = e.zeroed ? ' <span class="zbadge">Z</span>' : '';
+      const mm = (e.position_mm === null || e.position_mm === undefined)
+        ? '–' : e.position_mm.toFixed(2);
       return `<tr class="${cls}">
         <td class="num id">${e.slave}</td>
         <td class="state">${stateTxt}${zeroBadge}</td>
-        <td class="num pos">${fmt(e.display_position)}</td>
+        <td class="num pos">${mm}</td>
         <td class="num">${fmt(e.absolute_position)}</td>
         <td class="num">${fmt(e.turns)}</td>
         <td class="num">${fmt(e.speed)}</td>
