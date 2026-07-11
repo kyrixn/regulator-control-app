@@ -32,6 +32,7 @@ from flask_socketio import SocketIO
 from valve_controller import ValveController, MAX_INPUT_VALUE
 from encoder_controller import (
     DEFAULT_COUNTS_PER_TURN,
+    DEFAULT_DRUM_DIAMETER_MM,
     EncoderController,
     parse_slave_ids,
 )
@@ -319,6 +320,9 @@ def main():
     parser.add_argument('--counts-per-turn', type=lambda v: int(v, 0),
                         default=DEFAULT_COUNTS_PER_TURN,
                         help='Encoder single-turn resolution for absolute position')
+    parser.add_argument('--drum-diameter', type=float,
+                        default=DEFAULT_DRUM_DIAMETER_MM,
+                        help='Draw-wire drum diameter in mm (default 14.0)')
     parser.add_argument('--timeout', type=float, default=0.06,
                         help='RS-485 per-read timeout (s)')
     parser.add_argument('--interval', type=float, default=0.2,
@@ -350,6 +354,7 @@ def main():
             parity=args.parity,
             slave_ids=args.ids,
             counts_per_turn=args.counts_per_turn,
+            drum_diameter_mm=args.drum_diameter,
             timeout=args.timeout,
             interval=args.interval,
         )
