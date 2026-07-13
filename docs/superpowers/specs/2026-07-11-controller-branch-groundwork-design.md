@@ -89,12 +89,18 @@ the single source of truth server-side).
 ### `encoder_controller.py`
 - Add `zero(slave)` — capture the current absolute position of a **single**
   sensor as its display zero (independent per-sensor zeroing).
-- Keep existing `zero_all` and `clear_zero`.
+- Keep existing `zero_all` (global zero) and `clear_zero` (global clear).
+- Per-sensor `zero(slave)` and global `zero_all` write into the same
+  `zero_offsets` map, so they **overwrite each other per sensor, last write
+  wins**: a global ZERO ALL captures offsets for every online sensor; a
+  subsequent per-cell ZERO replaces just that sensor's offset, and another
+  global ZERO ALL replaces them all again.
 
 ### `app.py`
 - Load the mapping at startup; store it for state assembly.
 - New SocketIO event `zero_sensor` with payload `{ slave: int }` → calls
-  `encoder_controller.zero(slave)`.
+  `encoder_controller.zero(slave)`. The existing `zero` event (global ZERO ALL,
+  → `zero_all`) and `clear_zero` event (global CLEAR ZERO) are retained.
 - On the existing `rescan` event, additionally re-read `sensor_mapping.json`.
 - Build the joined state (per §2) and include `length_bar_min_mm`,
   `length_bar_max_mm`, and per-valve `sensor` / `position_mm` / `sensor_online`.
@@ -105,9 +111,9 @@ the single source of truth server-side).
 - **Remove the entire Encoders `<section>`** (the independent sensor table) and
   its `encPill` header status pill.
 - Each valve cell gains a small **ZERO** button (zeros only that cell's mapped
-  sensor).
+  sensor — the *individual* zero).
 - The shared valve controls keep STOP / APPLY ALL / ? STATUS / TIME and gain
-  **RESCAN** and a global **CLEAR ZERO**.
+  **ZERO ALL** (global zero), **CLEAR ZERO** (global clear), and **RESCAN**.
 
 ### `static/app.js`
 - `renderValves` now drives each bar from `position_mm` scaled to
@@ -116,7 +122,7 @@ the single source of truth server-side).
   a dash `–` when it is off/unset.
 - Per-cell ZERO button emits `zero_sensor` with the cell's mapped `sensor` id;
   it is disabled/no-op for unmapped regulators.
-- Wire RESCAN → `rescan`, CLEAR ZERO → `clear_zero`.
+- Wire ZERO ALL → `zero`, CLEAR ZERO → `clear_zero`, RESCAN → `rescan`.
 - Delete `renderEncoders` and all encoder-table DOM references.
 
 ### `static/style.css`
@@ -132,6 +138,9 @@ the single source of truth server-side).
   (`mv_to_bar`); `–` when the valve has no active setpoint.
 - **Unmapped regulator:** empty bar, `–` pressure until a setpoint is sent, ZERO
   button inert.
+- **Zeroing precedence:** individual (per-cell) ZERO and global ZERO ALL both
+  write offsets into the same map and overwrite each other per sensor, last
+  write wins. CLEAR ZERO drops every offset (back to absolute mm).
 
 ## Out of scope (YAGNI)
 
