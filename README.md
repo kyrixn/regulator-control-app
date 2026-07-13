@@ -25,23 +25,34 @@ a generic "USB serial". Pass `--valve-port` / `--rs485-port` to override, and
 
 ## Features
 
-**Valves (Giga R1)** — unchanged from `main`: live bar display of all 16
-valves, per-valve set boxes, APPLY ALL, STOP, ? STATUS, and TIME ramping.
+> **Branch `controller`.** Groundwork for closed-loop length control. The
+> standalone encoder table is gone; each regulator's bar now shows its muscle's
+> **length**, joined to a sensor through `sensor_mapping.json`.
+
+**Regulators + muscles** — the 16-cell grid stays, but each cell now shows its
+muscle's **length (mm)** as the bar (from the mapped sensor, scaled to a
+configurable band, default **−30…−10 mm**) and that regulator's **pressure** as
+text (a dash `–` when the valve is off). Per-valve set boxes, APPLY ALL, STOP,
+? STATUS, and TIME ramping are unchanged.
+
+**Sensor mapping** — `sensor_mapping.json` ties each regulator (valve id 0–15)
+to the sensor (RS-485 slave id) measuring its muscle. Edit it to match wiring;
+edits apply on the next **RESCAN** (no restart). Unmapped regulators show an
+empty bar.
 
 **Encoders (RS-485)** — a draw-wire setup: the encoder magnet rides a drum
 (Ø **14 mm** by default) with a thread wound on it, so one turn pays out one
 circumference of thread. The app scans slave ids (default **50–80**) for GJW
-encoders, then live-polls the ones that answer and shows a table per encoder:
-**POSITION** is the thread displacement in **mm to 2 decimals** (relative to
-the last zero); the remaining columns keep their raw values (abs position,
-turns, speed, status, errors, message):
+encoders and live-polls the ones that answer:
 
 ```
 position_mm = (counts − zero) / counts_per_turn × π × drum_diameter
 ```
 
-**ZERO ALL** sets the current position to 0, **CLEAR ZERO** returns to
-absolute, **RESCAN** re-sweeps the id range.
+**ZERO** (per cell) zeros just that sensor, **ZERO ALL** zeros every sensor,
+**CLEAR ZERO** returns to absolute, **RESCAN** re-sweeps the id range and
+reloads the mapping. Individual and global zero overwrite each other per
+sensor (last write wins).
 
 ## Install
 
@@ -73,6 +84,7 @@ Then open <http://localhost:5000>.
 | `--parity`          | `N`       | RS-485 parity (`N`/`E`/`O`)                      |
 | `--counts-per-turn` | `2097152` | Encoder single-turn resolution                  |
 | `--drum-diameter`   | `14.0`    | Draw-wire drum diameter in mm (position scaling) |
+| `--mapping`         | `sensor_mapping.json` | Path to the sensor↔regulator mapping JSON |
 | `--timeout`         | `0.06`    | RS-485 per-read timeout (s)                      |
 | `--interval`        | `0.2`     | Seconds between encoder poll cycles             |
 | `--host`            | `0.0.0.0` | Web server bind host                            |
@@ -95,6 +107,8 @@ vc2_webapp/  (branch: rs485-encoder-reader)
 ├── valve_controller.py     # Giga R1 valve serial layer (from main)
 ├── encoder_controller.py   # RS-485 encoder serial layer + poll thread
 ├── modbus_rtu.py           # pure Modbus RTU + GJW decode (no hardware dep)
+├── sensor_mapping.py       # loads sensor↔regulator mapping (tolerant)
+├── sensor_mapping.json     # regulator → sensor map (user-editable)
 ├── requirements.txt
 ├── templates/index.html
 └── static/{style.css, app.js}

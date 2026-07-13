@@ -310,6 +310,24 @@ class EncoderController:
             }
         self.message_queue.append(f"Zeroed {len(self.zero_offsets)} online encoder(s)")
 
+    def zero(self, slave: int) -> None:
+        """Capture one sensor's current absolute position as its display zero.
+
+        Individual and global (`zero_all`) zeroing share `zero_offsets`, so they
+        overwrite each other per sensor — last write wins.
+        """
+        with self.state_lock:
+            r = self.readings.get(slave)
+            if r is not None and r.online and r.absolute_position is not None:
+                self.zero_offsets[slave] = r.absolute_position
+                ok = True
+            else:
+                ok = False
+        self.message_queue.append(
+            f"Zeroed encoder {slave}" if ok
+            else f"[WARN] cannot zero encoder {slave} (offline/unknown)"
+        )
+
     def clear_zero(self) -> None:
         """Drop all zero offsets (display absolute position again)."""
         with self.state_lock:

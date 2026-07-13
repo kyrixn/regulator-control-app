@@ -1,13 +1,13 @@
-// Front-end for the vc2 pneumatic station web app.
-// Handles BOTH the valve regulator (Giga R1) and the RS-485 encoders,
-// which arrive together in a single {valves, encoders} state message.
+// Front-end for the vc2 pneumatic station web app (controller branch).
+// Each of the 16 valve cells now shows its muscle's LENGTH (mm, from the mapped
+// sensor) as a bar and the regulator's PRESSURE as text. The standalone encoder
+// table is gone; sensors are zeroed per-cell or globally.
 
 const NUM_VALVES = 16;
-const Y_MAX = 10500;          // matches the matplotlib GUI y-limit (mV)
-let MAX_VALUE = 4000;         // overwritten by server state
+let MAX_VALUE = 4000;         // valve setpoint limit, overwritten by server state
 
 const socket = io();
-const valveEls = [];          // index -> { input, bar, label, cell, id }
+const valveEls = [];          // index -> { input, bar, label, cell, id, zeroBtn, sensor }
 
 // ------------------------------------------------------------------
 // Build the two rows of 8 valves
@@ -40,12 +40,22 @@ function buildValves() {
         if (e.key === 'Enter') submitSingle(i, input);
       });
 
+      const zeroBtn = document.createElement('button');
+      zeroBtn.className = 'zero-btn';
+      zeroBtn.textContent = 'Z';
+      zeroBtn.title = 'Zero this sensor';
+      zeroBtn.addEventListener('click', () => {
+        const s = valveEls[i].sensor;
+        if (s !== null && s !== undefined) socket.emit('zero_sensor', { slave: s });
+      });
+
       cell.appendChild(barArea);
       cell.appendChild(id);
       cell.appendChild(input);
+      cell.appendChild(zeroBtn);
       container.appendChild(cell);
 
-      valveEls[i] = { input, bar, label, cell, id };
+      valveEls[i] = { input, bar, label, cell, id, zeroBtn, sensor: null };
     }
   }
 }
@@ -122,48 +132,76 @@ document.getElementById('btnStop').addEventListener('click', () => socket.emit('
 document.getElementById('btnApply').addEventListener('click', applyAll);
 document.getElementById('btnStatus').addEventListener('click', () => socket.emit('status'));
 
-// ------------------------------------------------------------------
-// Encoder actions
-// ------------------------------------------------------------------
+// Sensor actions (shared controls)
 document.getElementById('btnZero').addEventListener('click', () => socket.emit('zero'));
 document.getElementById('btnClear').addEventListener('click', () => socket.emit('clear_zero'));
 document.getElementById('btnRescan').addEventListener('click', () => socket.emit('rescan'));
 
 // ------------------------------------------------------------------
-// Rendering — valves
+// Rendering — valves (length bar + pressure text) joined with sensors
 // ------------------------------------------------------------------
-function renderValves(vstate) {
+function renderValves(state) {
+  const vstate = state.valves;
+  const muscles = state.muscles || [];
+  const minMM = state.length_bar_min_mm ?? -30;
+  const maxMM = state.length_bar_max_mm ?? -10;
+  const span = (maxMM - minMM) || 1;
+
+  const rangeHint = document.getElementById('rangeHint');
+  if (rangeHint) rangeHint.textContent = `${minMM}…${maxMM}`;
+
   const pill = document.getElementById('valvePill');
   const text = document.getElementById('valveText');
   const panel = document.getElementById('valvePanel');
 
-  if (!vstate) {
+  if (vstate) {
+    panel.classList.remove('disabled');
+    MAX_VALUE = vstate.max_value || MAX_VALUE;
+    document.getElementById('maxHint').textContent = MAX_VALUE;
+  } else {
     panel.classList.add('disabled');
-    pill.className = 'status-pill disconnected';
-    text.textContent = 'VALVES OFF';
-    return;
   }
-  panel.classList.remove('disabled');
-  MAX_VALUE = vstate.max_value || MAX_VALUE;
-  document.getElementById('maxHint').textContent = MAX_VALUE;
 
-  const valves = vstate.valves || {};
+  const valves = (vstate && vstate.valves) || {};
   for (let i = 0; i < NUM_VALVES; i++) {
     const el = valveEls[i];
+    const m = muscles[i] || {};
+
+    // Length bar from the mapped sensor's mm, scaled to [minMM, maxMM].
+    const pos = m.position_mm;
+    if (pos === null || pos === undefined) {
+      el.bar.style.height = '0%';
+      el.bar.classList.toggle('stale', true);
+    } else {
+      const pct = Math.max(0, Math.min(100, ((pos - minMM) / span) * 100));
+      el.bar.style.height = pct + '%';
+      el.bar.classList.toggle('stale', !m.sensor_online);
+    }
+
+    // Pressure text (dash when the valve has no active setpoint).
     const v = valves[String(i)];
     if (v) {
-      const pct = Math.max(0, Math.min(100, (v.mV / Y_MAX) * 100));
-      el.bar.style.height = pct + '%';
       el.label.textContent = `${v.bar.toFixed(2)} bar`;
       el.cell.classList.add('on');
     } else {
-      el.bar.style.height = '0%';
-      el.label.textContent = '';
+      el.label.textContent = '–';
       el.cell.classList.remove('on');
     }
+
+    // Per-cell zero target.
+    const sensor = (m.sensor === undefined) ? null : m.sensor;
+    el.sensor = sensor;
+    const mapped = sensor !== null;
+    el.zeroBtn.disabled = !mapped;
+    el.zeroBtn.title = mapped
+      ? `Zero sensor ${sensor}${m.sensor_online ? '' : ' (offline)'}`
+      : 'No sensor mapped';
   }
 
-  if (!vstate.connected) {
+  if (!vstate) {
+    pill.className = 'status-pill disconnected';
+    text.textContent = 'VALVES OFF';
+  } else if (!vstate.connected) {
     pill.className = 'status-pill disconnected';
     text.textContent = 'VALVES LOST';
   } else if (vstate.active > 0) {
@@ -172,69 +210,6 @@ function renderValves(vstate) {
   } else {
     pill.className = 'status-pill';
     text.textContent = 'VALVES IDLE';
-  }
-}
-
-// ------------------------------------------------------------------
-// Rendering — encoders
-// ------------------------------------------------------------------
-function fmt(v) { return (v === null || v === undefined) ? '–' : v; }
-
-function renderEncoders(estate) {
-  const pill = document.getElementById('encPill');
-  const text = document.getElementById('encText');
-  const panel = document.getElementById('encPanel');
-  const meta = document.getElementById('encMeta');
-  const tbody = document.getElementById('encRows');
-
-  if (!estate) {
-    panel.classList.add('disabled');
-    pill.className = 'status-pill disconnected';
-    text.textContent = 'ENCODERS OFF';
-    meta.textContent = 'RS-485 adapter not opened.';
-    return;
-  }
-  panel.classList.remove('disabled');
-
-  const range = estate.scanned_range || [];
-  const drum = estate.drum_diameter_mm;
-  document.getElementById('drumHint').textContent = drum;
-  meta.textContent =
-    `Port ${estate.port || '?'}  ·  ${estate.baudrate || '?'} 8${estate.parity || 'N'}1  ·  ` +
-    `Scanned ${range[0]}–${range[1]}  ·  Drum ⌀${drum} mm  ·  ` +
-    `Online ${estate.online || 0}  ·  Zeroed ${estate.zeroed || 0}`;
-
-  const encoders = estate.encoders || [];
-  if (!encoders.length) {
-    tbody.innerHTML = '<tr class="empty"><td colspan="9">' +
-      'No encoders found in the scanned slave-id range.</td></tr>';
-  } else {
-    tbody.innerHTML = encoders.map((e) => {
-      const cls = e.online ? 'online' : 'offline';
-      const stateTxt = e.online ? 'ONLINE' : 'OFFLINE';
-      const zeroBadge = e.zeroed ? ' <span class="zbadge">Z</span>' : '';
-      const mm = (e.position_mm === null || e.position_mm === undefined)
-        ? '–' : e.position_mm.toFixed(2);
-      return `<tr class="${cls}">
-        <td class="num id">${e.slave}</td>
-        <td class="state">${stateTxt}${zeroBadge}</td>
-        <td class="num pos">${mm}</td>
-        <td class="num">${fmt(e.absolute_position)}</td>
-        <td class="num">${fmt(e.turns)}</td>
-        <td class="num">${fmt(e.speed)}</td>
-        <td class="num">${fmt(e.status_code)}</td>
-        <td class="num">${fmt(e.error_count)}</td>
-        <td class="msg">${e.message || ''}</td>
-      </tr>`;
-    }).join('');
-  }
-
-  if ((estate.online || 0) > 0) {
-    pill.className = 'status-pill active';
-    text.textContent = `ENCODERS (${estate.online})`;
-  } else {
-    pill.className = 'status-pill';
-    text.textContent = 'ENCODERS SCAN…';
   }
 }
 
@@ -253,18 +228,13 @@ function logLine(line) {
 // ------------------------------------------------------------------
 // Socket wiring
 // ------------------------------------------------------------------
-socket.on('state', (state) => {
-  renderValves(state.valves);
-  renderEncoders(state.encoders);
-});
+socket.on('state', (state) => renderValves(state));
 socket.on('messages', (data) => (data.lines || []).forEach(logLine));
 socket.on('connect', () => logLine('[web] connected to server'));
 socket.on('disconnect', () => {
-  for (const id of ['valvePill', 'encPill']) {
-    document.getElementById(id).className = 'status-pill disconnected';
-  }
+  const pill = document.getElementById('valvePill');
+  pill.className = 'status-pill disconnected';
   document.getElementById('valveText').textContent = 'SERVER LOST';
-  document.getElementById('encText').textContent = 'SERVER LOST';
 });
 
 buildValves();

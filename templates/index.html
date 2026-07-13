@@ -13,9 +13,6 @@
       <div class="status-pill" id="valvePill">
         <span class="dot"></span><span id="valveText">VALVES …</span>
       </div>
-      <div class="status-pill" id="encPill">
-        <span class="dot"></span><span id="encText">ENCODERS …</span>
-      </div>
     </div>
   </header>
 
@@ -41,50 +38,21 @@
           <label for="timeInput">TIME (s)</label>
           <input type="text" id="timeInput" placeholder="0" inputmode="decimal">
         </div>
-      </aside>
-    </div>
-    <p class="hint">
-      Enter fires that valve. APPLY ALL fires every non-empty box in one batch.
-      Type <code>off</code> to turn a valve off. <code>TIME</code> = ramp
-      duration in seconds (blank/0 = instant). Max <span id="maxHint">4000</span>.
-    </p>
-  </section>
-
-  <!-- ===================== ENCODERS (RS-485) ===================== -->
-  <section class="panel" id="encPanel">
-    <h2 class="panel-title">Encoders <span class="src">— GJW over RS-485</span></h2>
-    <div class="panel-body">
-      <div class="table-wrap">
-        <div class="meta" id="encMeta">Waiting for scan…</div>
-        <div class="scroll">
-          <table class="enc-table">
-            <thead>
-              <tr>
-                <th class="num">ID</th><th>STATE</th>
-                <th class="num">POSITION (mm)</th><th class="num">ABS POSITION</th>
-                <th class="num">TURNS</th><th class="num">SPEED</th>
-                <th class="num">STATUS</th>
-                <th class="num">ERRORS</th><th>MESSAGE</th>
-              </tr>
-            </thead>
-            <tbody id="encRows">
-              <tr class="empty"><td colspan="9">No encoders yet.</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <aside class="controls">
-        <button id="btnZero" class="btn btn-apply">ZERO ALL</button>
+        <button id="btnZero" class="btn btn-accent">ZERO ALL</button>
         <button id="btnClear" class="btn btn-accent">CLEAR ZERO</button>
         <button id="btnRescan" class="btn btn-accent">RESCAN</button>
       </aside>
     </div>
     <p class="hint">
-      <strong>POSITION</strong> is thread displacement in mm relative to the
-      last <code>ZERO ALL</code> (draw-wire drum ⌀<span id="drumHint">14</span> mm).
-      <code>ZERO ALL</code> sets the current position to 0;
-      <code>CLEAR ZERO</code> returns to absolute; <code>RESCAN</code>
-      re-sweeps the slave-id range.
+      Each bar is the muscle's <strong>length in mm</strong> from its mapped
+      sensor (band <span id="rangeHint">−30…−10</span> mm); the label is that
+      regulator's <strong>pressure</strong> (<code>–</code> when off). Enter
+      fires that valve; APPLY ALL fires every non-empty box in one batch. Type
+      <code>off</code> to turn a valve off. <code>TIME</code> = ramp duration in
+      seconds (blank/0 = instant). Max <span id="maxHint">4000</span>. Per-cell
+      <code>Z</code> zeros that sensor; <code>ZERO ALL</code> zeros every sensor;
+      <code>CLEAR ZERO</code> returns to absolute; <code>RESCAN</code> re-sweeps
+      the bus and reloads the mapping.
     </p>
   </section>
 

@@ -29,24 +29,35 @@ import serial.tools.list_ports
 from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO
 
-from valve_controller import ValveController, MAX_INPUT_VALUE
+from valve_controller import ValveController, MAX_INPUT_VALUE, NUM_VALVES
 from encoder_controller import (
     DEFAULT_COUNTS_PER_TURN,
     DEFAULT_DRUM_DIAMETER_MM,
     EncoderController,
     parse_slave_ids,
 )
+from sensor_mapping import DEFAULT_MAPPING_PATH, load_mapping
 
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'vc2-pneumatic-station'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
+# Length-bar scaling (mm). Configurable here in code, not via CLI. Each valve's
+# bar plots its mapped sensor's length within this band.
+LENGTH_BAR_MIN_MM = -30.0
+LENGTH_BAR_MAX_MM = -10.0
+
 # Two shared controllers, created in main(). Either may stay None if its device
 # is absent or disabled.
 valve_controller = None
 encoder_controller = None
 _broadcast_started = False
+
+# regulator (valve id) -> {"muscle", "sensor"}; loaded in main(), reloaded on
+# RESCAN so edits to sensor_mapping.json apply without restarting the server.
+sensor_map = {}
+mapping_path = DEFAULT_MAPPING_PATH
 
 
 # ============================================================
@@ -111,17 +122,54 @@ def resolve_ports(args):
 
 
 # ============================================================
+# Combined state (valves + encoders + sensor mapping)
+# ============================================================
+
+def _muscles_state(enc_state):
+    """One entry per regulator, joined with its mapped sensor's length.
+
+    Kept separate from the valve `active` map (which only lists valves with a
+    live setpoint) so all 16 length bars render whether or not the valve is on.
+    """
+    positions = {
+        e["slave"]: (e.get("position_mm"), bool(e.get("online")))
+        for e in (enc_state or {}).get("encoders", [])
+    }
+    muscles = []
+    for reg in range(NUM_VALVES):
+        m = sensor_map.get(reg, {})
+        sensor = m.get("sensor")
+        pos, online = positions.get(sensor, (None, False))
+        muscles.append({
+            "regulator": reg,
+            "muscle": m.get("muscle", f"muscle_{reg:02d}"),
+            "sensor": sensor,
+            "position_mm": pos,
+            "sensor_online": online,
+        })
+    return muscles
+
+
+def build_state():
+    """Full snapshot pushed to the browser: valves, encoders, joined muscles."""
+    enc_state = encoder_controller.get_state() if encoder_controller else None
+    return {
+        "valves": valve_controller.get_state() if valve_controller else None,
+        "encoders": enc_state,
+        "muscles": _muscles_state(enc_state),
+        "length_bar_min_mm": LENGTH_BAR_MIN_MM,
+        "length_bar_max_mm": LENGTH_BAR_MAX_MM,
+    }
+
+
+# ============================================================
 # Background broadcaster: push combined state + messages
 # ============================================================
 
 def _broadcast_loop():
     """Emit valve + encoder state and drained messages ~5x/sec."""
     while True:
-        state = {
-            "valves": valve_controller.get_state() if valve_controller else None,
-            "encoders": encoder_controller.get_state() if encoder_controller else None,
-        }
-        socketio.emit('state', state)
+        socketio.emit('state', build_state())
 
         lines = []
         if valve_controller:
@@ -151,10 +199,7 @@ def index():
 
 @app.route('/api/state')
 def api_state():
-    return jsonify({
-        "valves": valve_controller.get_state() if valve_controller else None,
-        "encoders": encoder_controller.get_state() if encoder_controller else None,
-    })
+    return jsonify(build_state())
 
 
 @app.route('/api/ports')
@@ -169,10 +214,7 @@ def api_ports():
 @socketio.on('connect')
 def on_connect():
     _ensure_broadcaster()
-    socketio.emit('state', {
-        "valves": valve_controller.get_state() if valve_controller else None,
-        "encoders": encoder_controller.get_state() if encoder_controller else None,
-    })
+    socketio.emit('state', build_state())
 
 
 def _parse_ramp(data):
@@ -277,20 +319,37 @@ def on_ping():
 
 @socketio.on('zero')
 def on_zero():
+    """Global ZERO ALL — zero every online sensor."""
     if encoder_controller is not None:
         encoder_controller.zero_all()
 
 
+@socketio.on('zero_sensor')
+def on_zero_sensor(data):
+    """Individual zero — zero one sensor. data = {slave: int}."""
+    if encoder_controller is None:
+        return
+    try:
+        slave = int(data.get('slave'))
+    except (ValueError, TypeError):
+        return
+    encoder_controller.zero(slave)
+
+
 @socketio.on('clear_zero')
 def on_clear_zero():
+    """Global CLEAR ZERO — drop every zero offset (back to absolute mm)."""
     if encoder_controller is not None:
         encoder_controller.clear_zero()
 
 
 @socketio.on('rescan')
 def on_rescan():
+    """Re-sweep the RS-485 bus and re-read the sensor mapping."""
+    global sensor_map
     if encoder_controller is not None:
         encoder_controller.rescan()
+    sensor_map = load_mapping(mapping_path)
 
 
 # ============================================================
@@ -298,7 +357,7 @@ def on_rescan():
 # ============================================================
 
 def main():
-    global valve_controller, encoder_controller
+    global valve_controller, encoder_controller, sensor_map, mapping_path
 
     parser = argparse.ArgumentParser(
         description="vc2 pneumatic station web app (valves + RS-485 encoders)")
@@ -327,6 +386,9 @@ def main():
                         help='RS-485 per-read timeout (s)')
     parser.add_argument('--interval', type=float, default=0.2,
                         help='Seconds between encoder poll cycles')
+    # Sensor mapping
+    parser.add_argument('--mapping', default=DEFAULT_MAPPING_PATH,
+                        help='Path to the sensor↔regulator mapping JSON')
     # Web server
     parser.add_argument('--host', default='0.0.0.0', help='Web server host')
     parser.add_argument('--http-port', type=int, default=5000,
@@ -337,9 +399,13 @@ def main():
     print("   VC2 PNEUMATIC STATION (Web App) — valves + RS-485 encoders")
     print("=" * 65)
 
+    mapping_path = args.mapping
+    sensor_map = load_mapping(mapping_path)
+
     valve_port, rs485_port = resolve_ports(args)
     print(f"Valve regulator : {valve_port or '(none / disabled)'}")
     print(f"RS-485 encoders : {rs485_port or '(none / disabled)'}")
+    print(f"Sensor mapping  : {mapping_path} ({len(sensor_map)} regulator(s) mapped)")
 
     if not args.no_valves and valve_port:
         vc = ValveController(port=valve_port)
