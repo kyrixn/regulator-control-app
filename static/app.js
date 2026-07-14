@@ -26,6 +26,12 @@ function buildValves() {
       bar.className = 'bar';
       const label = document.createElement('div');
       label.className = 'bar-label';
+      const press = document.createElement('div');
+      press.className = 'press-val';
+      const len = document.createElement('div');
+      len.className = 'len-val';
+      label.appendChild(press);
+      label.appendChild(len);
       barArea.appendChild(bar);
       barArea.appendChild(label);
 
@@ -55,7 +61,7 @@ function buildValves() {
       cell.appendChild(zeroBtn);
       container.appendChild(cell);
 
-      valveEls[i] = { input, bar, label, cell, id, zeroBtn, sensor: null };
+      valveEls[i] = { input, bar, label, press, len, cell, id, zeroBtn, sensor: null };
     }
   }
 }
@@ -143,8 +149,8 @@ document.getElementById('btnRescan').addEventListener('click', () => socket.emit
 function renderValves(state) {
   const vstate = state.valves;
   const muscles = state.muscles || [];
-  const minMM = state.length_bar_min_mm ?? -30;
-  const maxMM = state.length_bar_max_mm ?? -10;
+  const minMM = state.length_bar_min_mm ?? -10;
+  const maxMM = state.length_bar_max_mm ?? 2;
   const span = (maxMM - minMM) || 1;
 
   const rangeHint = document.getElementById('rangeHint');
@@ -168,23 +174,27 @@ function renderValves(state) {
     const m = muscles[i] || {};
 
     // Length bar from the mapped sensor's mm, scaled to [minMM, maxMM].
+    // The bar saturates outside the band, so the exact length is shown as text.
     const pos = m.position_mm;
     if (pos === null || pos === undefined) {
       el.bar.style.height = '0%';
       el.bar.classList.toggle('stale', true);
+      el.len.textContent = '– mm';
     } else {
       const pct = Math.max(0, Math.min(100, ((pos - minMM) / span) * 100));
       el.bar.style.height = pct + '%';
       el.bar.classList.toggle('stale', !m.sensor_online);
+      el.len.textContent = `${pos.toFixed(2)} mm`;
     }
+    el.len.classList.toggle('stale', !m.sensor_online);
 
     // Pressure text (dash when the valve has no active setpoint).
     const v = valves[String(i)];
     if (v) {
-      el.label.textContent = `${v.bar.toFixed(2)} bar`;
+      el.press.textContent = `${v.bar.toFixed(2)} bar`;
       el.cell.classList.add('on');
     } else {
-      el.label.textContent = '–';
+      el.press.textContent = '–';
       el.cell.classList.remove('on');
     }
 

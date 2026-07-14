@@ -101,6 +101,9 @@ body {
   text-align: center; font-size: 11px; color: var(--text);
   pointer-events: none;
 }
+.bar-label .press-val { color: var(--text); }
+.bar-label .len-val { color: var(--highlight); font-weight: 700; margin-top: 2px; }
+.bar-label .len-val.stale { color: var(--offline); }
 .valve-id { font-size: 12px; color: var(--text-dim); }
 .valve.on .valve-id { color: var(--active); }
 

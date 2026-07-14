@@ -45,8 +45,8 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # Length-bar scaling (mm). Configurable here in code, not via CLI. Each valve's
 # bar plots its mapped sensor's length within this band.
-LENGTH_BAR_MIN_MM = -30.0
-LENGTH_BAR_MAX_MM = -10.0
+LENGTH_BAR_MIN_MM = -10.0
+LENGTH_BAR_MAX_MM = 2.0
 
 # Two shared controllers, created in main(). Either may stay None if its device
 # is absent or disabled.

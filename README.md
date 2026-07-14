@@ -31,7 +31,7 @@ a generic "USB serial". Pass `--valve-port` / `--rs485-port` to override, and
 
 **Regulators + muscles** — the 16-cell grid stays, but each cell now shows its
 muscle's **length (mm)** as the bar (from the mapped sensor, scaled to a
-configurable band, default **−30…−10 mm**) and that regulator's **pressure** as
+configurable band, default **−10…2 mm**) and that regulator's **pressure** as
 text (a dash `–` when the valve is off). Per-valve set boxes, APPLY ALL, STOP,
 ? STATUS, and TIME ramping are unchanged.
 
