@@ -9,3 +9,8 @@ env/
 .idea/
 .vscode/
 .planning/
+
+# Phase 0 test data + local analysis (not versioned)
+phase0_data/
+*.csv
+phase0_analyze.py
