@@ -10,7 +10,9 @@ env/
 .vscode/
 .planning/
 
-# Phase 0 test data + local analysis (not versioned)
+# Phase 0 test data + local analysis (not versioned).
+# Note: the driver Phase0test.py (capital P) IS tracked; only the lowercase
+# phase0_* analysis helpers and the CSV/PNG data are ignored.
 phase0_data/
 *.csv
-phase0_analyze.py
+phase0_*.py

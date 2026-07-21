@@ -44,7 +44,7 @@ from modbus_rtu import (
 
 
 DEFAULT_COUNTS_PER_TURN = 2_097_152  # 21-bit single-turn resolution
-DEFAULT_SLAVE_IDS = tuple(range(50, 81))  # matches rs485-reader's 50-80 default
+DEFAULT_SLAVE_IDS = (1,) + tuple(range(50, 81))  # id 1 plus the 50-80 range
 DEFAULT_DRUM_DIAMETER_MM = 14.0  # draw-wire drum: thread displacement = arc length
 
 

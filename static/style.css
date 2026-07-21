@@ -120,23 +120,26 @@ body {
 }
 .valve input:focus { outline: none; border-color: var(--highlight); }
 
-.zero-btn {
-  width: 100%;
-  background: var(--accent);
-  color: var(--text);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 4px 0;
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-  transition: background 0.12s;
+/* Length-target box: distinct from the pressure box; glows while PID active. */
+.valve input.len-input {
+  color: var(--highlight);
+  border-style: dashed;
+  font-size: 12px;
 }
-.zero-btn:hover:not(:disabled) { background: var(--accent-h); }
-.zero-btn:active:not(:disabled) { transform: translateY(1px); }
-.zero-btn:disabled { opacity: 0.35; cursor: default; }
+.valve input.len-input:disabled { opacity: 0.3; cursor: default; }
+.valve.len-ctrl { outline: 1px solid var(--highlight); outline-offset: 1px; border-radius: 4px; }
+.valve.len-ctrl input.len-input {
+  border-style: solid;
+  background: rgba(78, 205, 196, 0.12);
+  font-weight: 700;
+}
+/* On target (within tolerance): green instead of cyan. */
+.valve.len-ctrl.len-ok { outline-color: var(--active); }
+.valve.len-ctrl.len-ok input.len-input {
+  color: var(--active);
+  border-color: var(--active);
+  background: rgba(0, 255, 136, 0.12);
+}
 
 /* ---- Controls (shared by both panels) ---- */
 .controls {
@@ -160,6 +163,8 @@ body {
 .btn:active { transform: translateY(1px); }
 .btn-stop { background: var(--stop); font-size: 22px; }
 .btn-stop:hover { background: var(--stop-h); }
+.btn-hold { background: #b8860b; font-size: 18px; }
+.btn-hold:hover { background: #d4a017; }
 .btn-apply { background: var(--apply); }
 .btn-apply:hover { background: var(--apply-h); }
 .btn-accent { background: var(--accent); font-size: 13px; font-weight: 400; }
@@ -185,6 +190,29 @@ body {
   font-size: 15px;
 }
 .time-field input:focus { outline: none; border-color: var(--highlight); }
+
+.pid-field {
+  display: flex; flex-direction: column; gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.pid-field label { font-size: 11px; color: var(--text-dim); letter-spacing: 0.04em; }
+.pid-row { display: flex; gap: 6px; }
+.pid-row input {
+  width: 100%; min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 6px 4px;
+  text-align: center;
+  font-family: inherit;
+  font-size: 13px;
+}
+.pid-row input:focus { outline: none; border-color: var(--highlight); }
+.pid-field .btn { padding: 8px 0; }
 
 /* ---- Hints & log ---- */
 .hint { color: var(--text-dim); font-size: 12px; margin: 10px 2px 6px; }

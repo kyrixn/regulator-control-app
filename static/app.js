@@ -1,13 +1,14 @@
-// Front-end for the vc2 pneumatic station web app (controller branch).
-// Each of the 16 valve cells now shows its muscle's LENGTH (mm, from the mapped
-// sensor) as a bar and the regulator's PRESSURE as text. The standalone encoder
-// table is gone; sensors are zeroed per-cell or globally.
+// Front-end for the vc2 pneumatic station web app (len_control branch).
+// Each of the 16 valve cells shows its muscle's LENGTH (mm, from the mapped
+// sensor) as a bar and the regulator's PRESSURE as text. Each cell has two
+// inputs: a PRESSURE box (mV) and a target-LENGTH box (mm) that runs a PID
+// (keyed by sensor id). Global HOLD stops all PID loops and holds pressure.
 
 const NUM_VALVES = 16;
 let MAX_VALUE = 4000;         // valve setpoint limit, overwritten by server state
 
 const socket = io();
-const valveEls = [];          // index -> { input, bar, label, cell, id, zeroBtn, sensor }
+const valveEls = [];          // index -> { input, lenInput, bar, press, len, cell, id, sensor, maxmv }
 
 // ------------------------------------------------------------------
 // Build the two rows of 8 valves
@@ -41,27 +42,30 @@ function buildValves() {
 
       const input = document.createElement('input');
       input.type = 'text';
-      input.placeholder = '–';
+      input.className = 'press-input';
+      input.placeholder = 'mV';
+      input.title = 'Set pressure (mV)';
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') submitSingle(i, input);
       });
 
-      const zeroBtn = document.createElement('button');
-      zeroBtn.className = 'zero-btn';
-      zeroBtn.textContent = 'Z';
-      zeroBtn.title = 'Zero this sensor';
-      zeroBtn.addEventListener('click', () => {
-        const s = valveEls[i].sensor;
-        if (s !== null && s !== undefined) socket.emit('zero_sensor', { slave: s });
+      const lenInput = document.createElement('input');
+      lenInput.type = 'text';
+      lenInput.className = 'len-input';
+      lenInput.placeholder = '→mm';
+      lenInput.title = 'Set target length (mm) — runs PID';
+      lenInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') submitLength(i);
       });
 
       cell.appendChild(barArea);
       cell.appendChild(id);
       cell.appendChild(input);
-      cell.appendChild(zeroBtn);
+      cell.appendChild(lenInput);
       container.appendChild(cell);
 
-      valveEls[i] = { input, bar, label, press, len, cell, id, zeroBtn, sensor: null };
+      valveEls[i] = { input, lenInput, bar, label, press, len, cell, id,
+                      sensor: null, maxmv: MAX_VALUE };
     }
   }
 }
@@ -91,12 +95,37 @@ function submitSingle(valve, input) {
     logLine(`[ERR] V${valve}: invalid value '${input.value}'`);
     return;
   }
-  if (value > MAX_VALUE) {
-    logLine(`[ERR] V${valve}: ${value} exceeds limit (max ${MAX_VALUE})`);
+  const mx = valveEls[valve].maxmv || MAX_VALUE;
+  if (value > mx) {
+    logLine(`[ERR] V${valve}: ${value} exceeds limit (max ${mx})`);
     return;
   }
   socket.emit('set_valve', { valve, value, ramp });
   input.value = '';
+}
+
+// Set a target length (mm) for this cell's muscle — keyed by SENSOR id.
+function submitLength(i) {
+  const el = valveEls[i];
+  const sensor = el.sensor;
+  if (sensor === null || sensor === undefined) {
+    logLine(`[ERR] V${i}: no mapped sensor for length control`);
+    return;
+  }
+  const t = el.lenInput.value.trim().toLowerCase();
+  if (t === '') return;
+  if (t === 'off' || t === 'o' || t === 'x') {
+    socket.emit('set_length', { sensor, length: 'off' });
+    el.lenInput.value = '';
+    return;
+  }
+  const mm = parseFloat(t);
+  if (!Number.isFinite(mm)) {
+    logLine(`[ERR] V${i}: invalid length '${el.lenInput.value}'`);
+    return;
+  }
+  socket.emit('set_length', { sensor, length: mm });
+  el.lenInput.value = '';
 }
 
 function applyAll() {
@@ -135,6 +164,7 @@ function applyAll() {
 }
 
 document.getElementById('btnStop').addEventListener('click', () => socket.emit('stop'));
+document.getElementById('btnHold').addEventListener('click', () => socket.emit('hold'));
 document.getElementById('btnApply').addEventListener('click', applyAll);
 document.getElementById('btnStatus').addEventListener('click', () => socket.emit('status'));
 
@@ -142,6 +172,19 @@ document.getElementById('btnStatus').addEventListener('click', () => socket.emit
 document.getElementById('btnZero').addEventListener('click', () => socket.emit('zero'));
 document.getElementById('btnClear').addEventListener('click', () => socket.emit('clear_zero'));
 document.getElementById('btnRescan').addEventListener('click', () => socket.emit('rescan'));
+
+// PID gains — apply Kp/Ki live.
+const kpInput = document.getElementById('kpInput');
+const kiInput = document.getElementById('kiInput');
+let gainsInit = false;   // seed the fields once from the server, then leave them to the user
+document.getElementById('btnGains').addEventListener('click', () => {
+  const kp = parseFloat(kpInput.value);
+  const ki = parseFloat(kiInput.value);
+  const payload = {};
+  if (Number.isFinite(kp)) payload.kp = kp;
+  if (Number.isFinite(ki)) payload.ki = ki;
+  if (Object.keys(payload).length) socket.emit('set_gains', payload);
+});
 
 // ------------------------------------------------------------------
 // Rendering — valves (length bar + pressure text) joined with sensors
@@ -198,14 +241,35 @@ function renderValves(state) {
       el.cell.classList.remove('on');
     }
 
-    // Per-cell zero target.
-    const sensor = (m.sensor === undefined) ? null : m.sensor;
+    // Length-control target box (keyed by the muscle's SENSOR id).
+    const sensor = (m.sensor === undefined || m.sensor === null) ? null : m.sensor;
     el.sensor = sensor;
+    el.maxmv = m.max_mv || MAX_VALUE;
     const mapped = sensor !== null;
-    el.zeroBtn.disabled = !mapped;
-    el.zeroBtn.title = mapped
-      ? `Zero sensor ${sensor}${m.sensor_online ? '' : ' (offline)'}`
-      : 'No sensor mapped';
+    el.lenInput.disabled = !mapped;
+    if (!mapped) {
+      el.lenInput.placeholder = '—';
+      el.cell.classList.remove('len-ctrl', 'len-ok');
+    } else if (m.controlled) {
+      const tgt = Number(m.target_mm).toFixed(2);
+      el.lenInput.placeholder = `${m.at_target ? '✓' : '▶'} ${tgt}`;
+      el.lenInput.title = `Length PID → ${tgt} mm (out ${m.output_mv} mV`
+        + `${m.at_target ? ', on target' : ''}). Type a value to change, 'off' to release.`;
+      el.cell.classList.add('len-ctrl');
+      el.cell.classList.toggle('len-ok', !!m.at_target);
+    } else {
+      el.lenInput.placeholder = '→mm';
+      el.lenInput.title = 'Set target length (mm) — runs PID';
+      el.cell.classList.remove('len-ctrl', 'len-ok');
+    }
+  }
+
+  // Seed the PID gain fields once from the server.
+  const gains = (state.control && state.control.gains) || null;
+  if (gains && !gainsInit) {
+    if (kpInput.value === '') kpInput.value = gains.kp;
+    if (kiInput.value === '') kiInput.value = gains.ki;
+    gainsInit = true;
   }
 
   if (!vstate) {

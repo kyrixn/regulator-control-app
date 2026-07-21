@@ -25,15 +25,33 @@ a generic "USB serial". Pass `--valve-port` / `--rs485-port` to override, and
 
 ## Features
 
-> **Branch `controller`.** Groundwork for closed-loop length control. The
-> standalone encoder table is gone; each regulator's bar now shows its muscle's
-> **length**, joined to a sensor through `sensor_mapping.json`.
+> **Branch `len_control`.** Closed-loop length control. Each muscle can be
+> driven either by **pressure** (mV) or by a **target length** (mm) via a
+> conservative PID, joined to a sensor through `sensor_mapping.json`.
 
-**Regulators + muscles** — the 16-cell grid stays, but each cell now shows its
-muscle's **length (mm)** as the bar (from the mapped sensor, scaled to a
-configurable band, default **−10…2 mm**) and that regulator's **pressure** as
-text (a dash `–` when the valve is off). Per-valve set boxes, APPLY ALL, STOP,
-? STATUS, and TIME ramping are unchanged.
+**Regulators + muscles** — each of the 16 cells shows its muscle's
+**length (mm)** as the bar (from the mapped sensor, scaled to a configurable
+band, default **−10…2 mm**) and that regulator's **pressure** as text. Each
+cell has **two inputs**: a top **pressure** box (mV) and a bottom
+**target-length** box (mm). APPLY ALL, STOP, ? STATUS, and TIME ramping are
+unchanged.
+
+**Length control (PID)** — type a target length (mm) in a cell's bottom box to
+run a **conservative PI** loop (Kd=0 by default) that trims the regulator
+pressure until the mapped sensor reads that length — tuned for **no
+steady-state error**, slow response accepted. A **±0.1 mm deadband**
+(`--tolerance`) stops it hunting once on target (the box turns green / shows
+`✓`); the working range is only a few mm. Targets are keyed by **sensor id**
+(the sensor lives on the muscle; the valve may be re-wired). Setting a pressure
+on a cell cancels its length control. Muscle regulators are hard-capped at
+**3000 mV** (PID output and manual commands); unmapped valves keep 4000.
+Gains are live-tunable via the **PID** fields (**SET PID**) or `--kp/--ki/--kd`,
+and the plant direction via `--pid-sign` (default `-1`: pressure ↑ shortens the
+muscle).
+
+- **HOLD** — stop every PID loop and hold the current pressures (also cancels
+  ramps). Nothing vents.
+- **STOP** — emergency vent (all valves off; also clears all PID targets).
 
 **Sensor mapping** — `sensor_mapping.json` ties each regulator (valve id 0–15)
 to the sensor (RS-485 slave id) measuring its muscle. Edit it to match wiring;
@@ -49,10 +67,9 @@ encoders and live-polls the ones that answer:
 position_mm = (counts − zero) / counts_per_turn × π × drum_diameter
 ```
 
-**ZERO** (per cell) zeros just that sensor, **ZERO ALL** zeros every sensor,
-**CLEAR ZERO** returns to absolute, **RESCAN** re-sweeps the id range and
-reloads the mapping. Individual and global zero overwrite each other per
-sensor (last write wins).
+**ZERO ALL** zeros every online sensor (sets the length datum), **CLEAR ZERO**
+returns to absolute, **RESCAN** re-sweeps the id range and reloads the mapping.
+(The former per-cell zero button is replaced by the target-length box.)
 
 ## Install
 
@@ -102,10 +119,11 @@ Then open <http://localhost:5000>.
 ## Project layout
 
 ```
-vc2_webapp/  (branch: rs485-encoder-reader)
+vc2_webapp/  (branch: len_control)
 ├── app.py                  # Flask + SocketIO server, opens both ports
 ├── valve_controller.py     # Giga R1 valve serial layer (from main)
 ├── encoder_controller.py   # RS-485 encoder serial layer + poll thread
+├── length_controller.py    # conservative PI length control (keyed by sensor)
 ├── modbus_rtu.py           # pure Modbus RTU + GJW decode (no hardware dep)
 ├── sensor_mapping.py       # loads sensor↔regulator mapping (tolerant)
 ├── sensor_mapping.json     # regulator → sensor map (user-editable)

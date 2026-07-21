@@ -32,11 +32,20 @@
       </div>
       <aside class="controls">
         <button id="btnStop" class="btn btn-stop">STOP</button>
+        <button id="btnHold" class="btn btn-hold">HOLD</button>
         <button id="btnApply" class="btn btn-apply">APPLY ALL</button>
         <button id="btnStatus" class="btn btn-accent">? STATUS</button>
         <div class="time-field">
           <label for="timeInput">TIME (s)</label>
           <input type="text" id="timeInput" placeholder="0" inputmode="decimal">
+        </div>
+        <div class="pid-field">
+          <label>PID gains</label>
+          <div class="pid-row">
+            <input type="text" id="kpInput" placeholder="Kp" inputmode="decimal">
+            <input type="text" id="kiInput" placeholder="Ki" inputmode="decimal">
+          </div>
+          <button id="btnGains" class="btn btn-accent">SET PID</button>
         </div>
         <button id="btnZero" class="btn btn-accent">ZERO ALL</button>
         <button id="btnClear" class="btn btn-accent">CLEAR ZERO</button>
@@ -46,15 +55,16 @@
     <p class="hint">
       Each bar is the muscle's <strong>length in mm</strong> from its mapped
       sensor (band <span id="rangeHint">−10…2</span> mm); the label shows that
-      regulator's <strong>pressure</strong> (<code>–</code> when off) with the
-      exact <strong>length in mm</strong> below it (the bar saturates outside
-      the band, so read the number). Enter
-      fires that valve; APPLY ALL fires every non-empty box in one batch. Type
-      <code>off</code> to turn a valve off. <code>TIME</code> = ramp duration in
-      seconds (blank/0 = instant). Max <span id="maxHint">4000</span>. Per-cell
-      <code>Z</code> zeros that sensor; <code>ZERO ALL</code> zeros every sensor;
-      <code>CLEAR ZERO</code> returns to absolute; <code>RESCAN</code> re-sweeps
-      the bus and reloads the mapping.
+      regulator's <strong>pressure</strong> with the exact <strong>length</strong>
+      below it. The <strong>top box sets pressure (mV)</strong>; the
+      <strong>bottom box sets a target length (mm)</strong> which runs a PID
+      (bottom box highlighted while active). Setting a pressure cancels that
+      muscle's length control. Muscles are capped at
+      <strong>3000&nbsp;mV</strong>. <code>HOLD</code> stops every PID and holds
+      current pressure; <code>STOP</code> vents all; <code>ZERO ALL</code> /
+      <code>CLEAR ZERO</code> set the length datum; <code>SET PID</code> updates
+      the gains live; <code>RESCAN</code> reloads the mapping.
+      <span id="maxHint" hidden>4000</span>
     </p>
   </section>
 

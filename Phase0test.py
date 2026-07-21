@@ -8,11 +8,12 @@ Open-loop characterisation run for the two antagonist muscles R57 and R58
 Sequence
 --------
 1. Pre-inflate R57 and R58 to 1950, hold 2 s, then zero sensors 57 and 58.
-2. Oscillate between two antagonist setpoints, each reached by a 1 s linear ramp:
-       A = (R57, R58) = (2200, 1850)
-       B = (R57, R58) = (1850, 2250)
-   One cycle = ramp to A, pause 0.75 s, ramp to B, pause 0.75 s.
-   Repeat for 20 cycles (40 ramps, ~70 s).
+2. Oscillate between two antagonist setpoints A and B, each reached by a linear
+   ramp whose duration sweeps linearly from --min-ramp to --max-ramp across the
+   run (default 0.5 s -> 2.0 s) so ramp-rate sensitivity can be probed:
+       A = (R57, R58) = STATE_A
+       B = (R57, R58) = STATE_B
+   One cycle = ramp to A, hold, ramp to B, hold. Repeat for --cycles cycles.
 3. From the instant of zeroing, sample both sensors' length (mm, relative to
    zero) and the commanded regulator setpoints, and save everything to a CSV
    on disk.
@@ -53,14 +54,15 @@ SENSORS = (57, 58)          # RS-485 slave ids of the two muscles under test
 PRE_INFLATE = 2000          # regulator setpoint held before zeroing
 STATE_A = (2200, 1850)      # (R57, R58)
 STATE_B = (1850, 2300)      # (R57, R58)
-RAMP_S = 1.0                # linear-transition duration
+MIN_RAMP_S = 0.5            # ramp duration on the first cycle
+MAX_RAMP_S = 2.0            # ramp duration on the last cycle (sweeps linearly)
 PAUSE_S = 1              # dwell at each setpoint
 PRE_PAUSE_S = 2.5           # dwell after pre-inflate, before zeroing
 CYCLES = 10           # one cycle = A (ramp+pause) then B (ramp+pause)
 SAMPLE_HZ = 50.0
 
 CSV_COLUMNS = [
-    "wall_time", "elapsed_s", "cycle", "segment",
+    "wall_time", "elapsed_s", "cycle", "segment", "ramp_s",
     "target_R57", "target_R58", "cmd_R57_mV", "cmd_R58_mV",
     "pos_R57_mm", "pos_R58_mm", "online_R57", "online_R58",
 ]
@@ -108,13 +110,14 @@ class Recorder:
         self._stop = threading.Event()
         self._thread = None
         self._ctx_lock = threading.Lock()
-        self._ctx = {"cycle": 0, "segment": "zero",
+        self._ctx = {"cycle": 0, "segment": "zero", "ramp": 0.0,
                      "t57": PRE_INFLATE, "t58": PRE_INFLATE}
         self.t0 = None
 
-    def set_context(self, cycle, segment, t57, t58):
+    def set_context(self, cycle, segment, t57, t58, ramp):
         with self._ctx_lock:
-            self._ctx = {"cycle": cycle, "segment": segment, "t57": t57, "t58": t58}
+            self._ctx = {"cycle": cycle, "segment": segment, "ramp": ramp,
+                         "t57": t57, "t58": t58}
 
     def _cmd(self):
         with self.valve.display_lock:
@@ -136,7 +139,7 @@ class Recorder:
             p57, p58, on57, on58 = self._sensor()
             self.rows.append([
                 round(time.time(), 3), round(start - self.t0, 4),
-                c["cycle"], c["segment"], c["t57"], c["t58"],
+                c["cycle"], c["segment"], round(c["ramp"], 3), c["t57"], c["t58"],
                 cmd57, cmd58, p57, p58, on57, on58,
             ])
             rest = self.period - (time.perf_counter() - start)
@@ -239,13 +242,17 @@ def run(args):
         # 2) Start recording, then oscillate.
         rec.start()
         for cycle in range(1, args.cycles + 1):
+            # Ramp duration sweeps linearly from --min-ramp (first cycle) to
+            # --max-ramp (last cycle).
+            frac = 0.0 if args.cycles <= 1 else (cycle - 1) / (args.cycles - 1)
+            ramp_s = args.min_ramp + (args.max_ramp - args.min_ramp) * frac
             for label, (t57, t58) in (("A", STATE_A), ("B", STATE_B)):
-                rec.set_context(cycle, f"{label}_ramp", t57, t58)
-                valve.set_multiple_valves([(v57, t57), (v58, t58)], ramp=RAMP_S)
-                time.sleep(RAMP_S)
-                rec.set_context(cycle, f"{label}_hold", t57, t58)
+                rec.set_context(cycle, f"{label}_ramp", t57, t58, ramp_s)
+                valve.set_multiple_valves([(v57, t57), (v58, t58)], ramp=ramp_s)
+                time.sleep(ramp_s)
+                rec.set_context(cycle, f"{label}_hold", t57, t58, ramp_s)
                 time.sleep(PAUSE_S)
-            print(f"  cycle {cycle}/{args.cycles} done "
+            print(f"  cycle {cycle}/{args.cycles} (ramp {ramp_s:.2f}s) done "
                   f"({len(rec.rows)} samples)")
 
     except KeyboardInterrupt:
@@ -276,6 +283,10 @@ def build_parser():
     p.add_argument("--valve-port", default=None, help="Giga R1 regulator port")
     p.add_argument("--rs485-port", default=None, help="USB-RS-485 adapter port")
     p.add_argument("--cycles", type=int, default=CYCLES, help="number of A-B cycles")
+    p.add_argument("--min-ramp", type=float, default=MIN_RAMP_S,
+                   help="ramp duration on the first cycle (s)")
+    p.add_argument("--max-ramp", type=float, default=MAX_RAMP_S,
+                   help="ramp duration on the last cycle (s)")
     p.add_argument("--sample-hz", type=float, default=SAMPLE_HZ, help="recording rate")
     p.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "phase0_data"),
                    help="output directory for the CSV")

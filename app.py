@@ -37,6 +37,10 @@ from encoder_controller import (
     parse_slave_ids,
 )
 from sensor_mapping import DEFAULT_MAPPING_PATH, load_mapping
+from length_controller import (
+    LengthController, MUSCLE_MAX_MV,
+    DEFAULT_KP, DEFAULT_KI, DEFAULT_KD, DEFAULT_SIGN, DEFAULT_TOLERANCE_MM,
+)
 
 
 app = Flask(__name__)
@@ -52,12 +56,33 @@ LENGTH_BAR_MAX_MM = 2.0
 # is absent or disabled.
 valve_controller = None
 encoder_controller = None
+length_controller = None
 _broadcast_started = False
 
 # regulator (valve id) -> {"muscle", "sensor"}; loaded in main(), reloaded on
 # RESCAN so edits to sensor_mapping.json apply without restarting the server.
 sensor_map = {}
 mapping_path = DEFAULT_MAPPING_PATH
+
+
+# ============================================================
+# Mapping helpers (length control is keyed by SENSOR id, since the sensor
+# lives on the muscle while the driving valve may be re-wired)
+# ============================================================
+
+def sensor_to_reg():
+    """Live {sensor_id: valve_id} inverted from the current mapping."""
+    return {m["sensor"]: reg for reg, m in sensor_map.items()
+            if m.get("sensor") is not None}
+
+
+def reg_to_sensor(reg):
+    return sensor_map.get(reg, {}).get("sensor")
+
+
+def muscle_max(reg):
+    """Pressure ceiling for a valve: 3000 mV for a mapped muscle, else 4000."""
+    return MUSCLE_MAX_MV if reg_to_sensor(reg) is not None else MAX_INPUT_VALUE
 
 
 # ============================================================
@@ -135,17 +160,25 @@ def _muscles_state(enc_state):
         e["slave"]: (e.get("position_mm"), bool(e.get("online")))
         for e in (enc_state or {}).get("encoders", [])
     }
+    controllers = (length_controller.get_state()["controllers"]
+                   if length_controller else {})
     muscles = []
     for reg in range(NUM_VALVES):
         m = sensor_map.get(reg, {})
         sensor = m.get("sensor")
         pos, online = positions.get(sensor, (None, False))
+        c = controllers.get(sensor) if sensor is not None else None
         muscles.append({
             "regulator": reg,
             "muscle": m.get("muscle", f"muscle_{reg:02d}"),
             "sensor": sensor,
             "position_mm": pos,
             "sensor_online": online,
+            "controlled": c is not None,
+            "target_mm": c["target_mm"] if c else None,
+            "output_mv": c["output_mv"] if c else None,
+            "at_target": c["at_target"] if c else False,
+            "max_mv": muscle_max(reg),
         })
     return muscles
 
@@ -153,12 +186,19 @@ def _muscles_state(enc_state):
 def build_state():
     """Full snapshot pushed to the browser: valves, encoders, joined muscles."""
     enc_state = encoder_controller.get_state() if encoder_controller else None
+    lc = length_controller.get_state() if length_controller else {}
     return {
         "valves": valve_controller.get_state() if valve_controller else None,
         "encoders": enc_state,
         "muscles": _muscles_state(enc_state),
         "length_bar_min_mm": LENGTH_BAR_MIN_MM,
         "length_bar_max_mm": LENGTH_BAR_MAX_MM,
+        "control": {
+            "available": length_controller is not None,
+            "gains": lc.get("gains", {"kp": DEFAULT_KP, "ki": DEFAULT_KI, "kd": DEFAULT_KD}),
+            "tolerance_mm": lc.get("tolerance_mm", DEFAULT_TOLERANCE_MM),
+            "max_mv": lc.get("max_mv", MUSCLE_MAX_MV),
+        },
     }
 
 
@@ -230,19 +270,33 @@ def _parse_ramp(data):
 
 @socketio.on('set_valve')
 def on_set_valve(data):
-    """data = {valve: int, value: int | 'off', ramp: float}"""
+    """data = {valve: int, value: int | 'off', ramp: float}
+
+    A manual pressure command takes the muscle out of length control.
+    Mapped muscles are clamped to the 3000 mV muscle ceiling.
+    """
     if valve_controller is None:
         return
     valve = int(data.get('valve'))
     value = data.get('value')
     ramp = _parse_ramp(data)
+    s = reg_to_sensor(valve)
+    if s is not None and length_controller is not None:
+        length_controller.clear(s)
     if isinstance(value, str) and value.strip().lower() in ('off', 'o', 'x'):
         valve_controller.valve_off(valve, ramp=ramp)
         return
     try:
-        valve_controller.set_valve(valve, int(value), ramp=ramp)
+        val = int(value)
     except (ValueError, TypeError):
         valve_controller.message_queue.append(f"[ERR] V{valve}: invalid value '{value}'")
+        return
+    mx = muscle_max(valve)
+    if val > mx:
+        valve_controller.message_queue.append(
+            f"[ERR] V{valve}: {val} exceeds limit (max {mx})")
+        return
+    valve_controller.set_valve(valve, val, ramp=ramp)
 
 
 @socketio.on('apply_all')
@@ -268,7 +322,7 @@ def on_apply_all(data):
         except (ValueError, TypeError):
             invalid.append((valve, raw))
             continue
-        if val > MAX_INPUT_VALUE:
+        if val > muscle_max(valve):
             invalid.append((valve, raw))
             continue
         pairs.append((valve, val))
@@ -284,6 +338,13 @@ def on_apply_all(data):
         valve_controller.message_queue.append("[INFO] APPLY ALL: no values to apply")
         return
 
+    # A manual pressure batch takes any commanded muscle out of length control.
+    if length_controller is not None:
+        for v, _ in pairs:
+            s = reg_to_sensor(v)
+            if s is not None:
+                length_controller.clear(s)
+
     ramp = _parse_ramp(data)
     if valve_controller.set_multiple_valves(pairs, ramp=ramp):
         suffix = f" over {ramp:g}s" if ramp else ""
@@ -298,6 +359,8 @@ def on_valve_off(data):
 
 @socketio.on('stop')
 def on_stop():
+    if length_controller is not None:
+        length_controller.clear_all()
     if valve_controller is not None:
         valve_controller.emergency_stop()
         valve_controller.message_queue.append('** EMERGENCY STOP (button) **')
@@ -324,18 +387,6 @@ def on_zero():
         encoder_controller.zero_all()
 
 
-@socketio.on('zero_sensor')
-def on_zero_sensor(data):
-    """Individual zero — zero one sensor. data = {slave: int}."""
-    if encoder_controller is None:
-        return
-    try:
-        slave = int(data.get('slave'))
-    except (ValueError, TypeError):
-        return
-    encoder_controller.zero(slave)
-
-
 @socketio.on('clear_zero')
 def on_clear_zero():
     """Global CLEAR ZERO — drop every zero offset (back to absolute mm)."""
@@ -352,12 +403,63 @@ def on_rescan():
     sensor_map = load_mapping(mapping_path)
 
 
+# ---- Length-control events (closed-loop PID, keyed by sensor) ----
+
+def _to_float(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+@socketio.on('set_length')
+def on_set_length(data):
+    """data = {sensor: int, length: float | 'off' | null}. Keyed by sensor id."""
+    if length_controller is None:
+        return
+    try:
+        sensor = int(data.get('sensor'))
+    except (ValueError, TypeError):
+        return
+    length = data.get('length')
+    if length is None or (isinstance(length, str)
+                          and length.strip().lower() in ('', 'off', 'o', 'x')):
+        length_controller.clear(sensor)
+        return
+    mm = _to_float(length)
+    if mm is None:
+        if valve_controller is not None:
+            valve_controller.message_queue.append(
+                f"[ERR] sensor {sensor}: invalid length '{length}'")
+        return
+    length_controller.set_length(sensor, mm)
+
+
+@socketio.on('hold')
+def on_hold():
+    """Global HOLD — stop every PID loop and hold the current pressures."""
+    if length_controller is not None:
+        length_controller.clear_all()
+    if valve_controller is not None:
+        valve_controller._cancel_all_ramps()
+        valve_controller.message_queue.append('** HOLD — PID off, pressure held **')
+
+
+@socketio.on('set_gains')
+def on_set_gains(data):
+    """data = {kp: float, ki: float}."""
+    if length_controller is not None:
+        length_controller.set_gains(kp=_to_float(data.get('kp')),
+                                    ki=_to_float(data.get('ki')))
+
+
 # ============================================================
 # Entry point
 # ============================================================
 
 def main():
-    global valve_controller, encoder_controller, sensor_map, mapping_path
+    global valve_controller, encoder_controller, length_controller
+    global sensor_map, mapping_path
 
     parser = argparse.ArgumentParser(
         description="vc2 pneumatic station web app (valves + RS-485 encoders)")
@@ -371,8 +473,8 @@ def main():
     parser.add_argument('--no-encoders', action='store_true',
                         help='Do not open the RS-485 encoder bus')
     # Encoder / Modbus options
-    parser.add_argument('--ids', type=parse_slave_ids, default=parse_slave_ids("50-80"),
-                        help='Encoder slave ids to scan, e.g. 50-80 or 1,2,10')
+    parser.add_argument('--ids', type=parse_slave_ids, default=parse_slave_ids("1,50-80"),
+                        help='Encoder slave ids to scan (default 1,50-80)')
     parser.add_argument('--baud', type=int, default=115200, help='RS-485 baud rate')
     parser.add_argument('--parity', default='N', choices=['N', 'E', 'O'],
                         help='RS-485 parity')
@@ -384,11 +486,22 @@ def main():
                         help='Draw-wire drum diameter in mm (default 14.0)')
     parser.add_argument('--timeout', type=float, default=0.06,
                         help='RS-485 per-read timeout (s)')
-    parser.add_argument('--interval', type=float, default=0.2,
+    parser.add_argument('--interval', type=float, default=0.05,
                         help='Seconds between encoder poll cycles')
     # Sensor mapping
     parser.add_argument('--mapping', default=DEFAULT_MAPPING_PATH,
                         help='Path to the sensor↔regulator mapping JSON')
+    # Length control (PID)
+    parser.add_argument('--kp', type=float, default=DEFAULT_KP,
+                        help='Length PID proportional gain (mV/mm)')
+    parser.add_argument('--ki', type=float, default=DEFAULT_KI,
+                        help='Length PID integral gain (mV/mm/s)')
+    parser.add_argument('--kd', type=float, default=DEFAULT_KD,
+                        help='Length PID derivative gain')
+    parser.add_argument('--pid-sign', type=int, default=DEFAULT_SIGN, choices=[-1, 1],
+                        help='Plant sign: -1 = pressure up shortens the muscle')
+    parser.add_argument('--tolerance', type=float, default=DEFAULT_TOLERANCE_MM,
+                        help='Length deadband (mm): within this of target, stop trimming')
     # Web server
     parser.add_argument('--host', default='0.0.0.0', help='Web server host')
     parser.add_argument('--http-port', type=int, default=5000,
@@ -432,6 +545,20 @@ def main():
         print("[ERR] Opened neither device. Check connections / --valve-port / --rs485-port.")
         return
 
+    if valve_controller is not None and encoder_controller is not None:
+        length_controller = LengthController(
+            valve_controller, encoder_controller,
+            sensor_to_reg=sensor_to_reg,
+            kp=args.kp, ki=args.ki, kd=args.kd, sign=args.pid_sign,
+            tolerance_mm=args.tolerance,
+            message_queue=valve_controller.message_queue,
+        )
+        length_controller.start()
+        print(f"Length control : ON (Kp={args.kp:g} Ki={args.ki:g} Kd={args.kd:g}, "
+              f"sign={args.pid_sign}, ±{args.tolerance:g} mm, muscle max {MUSCLE_MAX_MV} mV)")
+    else:
+        print("Length control : off (needs both valve + encoder devices)")
+
     print(f"\n[OK] Serving on http://{args.host}:{args.http_port}")
     try:
         socketio.run(app, host=args.host, port=args.http_port,
@@ -439,6 +566,8 @@ def main():
     except KeyboardInterrupt:
         print("\n[STOP] Shutting down...")
     finally:
+        if length_controller is not None:
+            length_controller.stop()
         if valve_controller is not None:
             try:
                 valve_controller.emergency_stop()
