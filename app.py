@@ -106,9 +106,11 @@ def _blob(p):
 
 
 def _is_giga(p):
-    """Arduino Giga R1 (valve regulator): VID 2341 / 'giga' / 'arduino'."""
+    """Valve regulator board: Arduino Giga R1 (VID 2341 / 'giga' / 'arduino')
+    or ESP32-S3 valve board (VID 303a / 'espressif')."""
     b = _blob(p)
-    return "giga" in b or "arduino" in b or "2341:" in b
+    return ("giga" in b or "arduino" in b or "2341:" in b
+            or "303a:" in b or "espressif" in b)
 
 
 def _is_rs485_bridge(p):
