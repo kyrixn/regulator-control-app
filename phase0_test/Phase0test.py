@@ -22,10 +22,10 @@ Sequence
 This talks to the hardware directly, so the web app (app.py) must NOT be
 running at the same time (it would hold the serial ports).
 
-Usage:
-    python Phase0test.py
-    python Phase0test.py --valve-port /dev/ttyACM0 --rs485-port /dev/ttyCH9344USB0
-    python Phase0test.py --cycles 20 --sample-hz 50 --out phase0_data
+Run it from anywhere (paths are resolved relative to this file):
+    python phase0_test/Phase0test.py
+    python phase0_test/Phase0test.py --valve-port /dev/ttyACM0 --rs485-port /dev/ttyCH9344USB0
+    python phase0_test/Phase0test.py --cycles 20 --sample-hz 50 --out phase0_test/phase0_data
 """
 
 from __future__ import annotations
@@ -36,6 +36,11 @@ import os
 import sys
 import threading
 import time
+
+# This script lives in phase0_test/ but drives the app's serial layers, which
+# live one level up — put the project root on sys.path before importing them so
+# it runs from any working directory.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import serial.tools.list_ports
 

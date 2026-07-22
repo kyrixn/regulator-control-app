@@ -122,5 +122,15 @@ vc2_webapp/  (branch: rs485-encoder-reader)
 ├── sensor_mapping.json     # regulator → sensor map (user-editable)
 ├── requirements.txt
 ├── templates/index.html
-└── static/{style.css, app.js}
+├── static/{style.css, app.js}
+└── phase0_test/            # standalone Phase 0 characterisation (no web app)
+    ├── Phase0test.py       # runs the hardware sequence, writes a CSV
+    ├── phase0_analyze.py   # cycle-to-cycle repeatability plot
+    ├── phase0_holds.py     # settled extremes vs ramp duration plot
+    └── phase0_data/        # CSVs + PNGs (git-ignored)
 ```
+
+Phase 0 scripts run from the repo root and resolve their own paths, so
+`python phase0_test/Phase0test.py` works regardless of the working directory.
+`Phase0test.py` talks to the hardware directly — stop `app.py` first, or the
+serial ports will already be held.

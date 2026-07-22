@@ -11,6 +11,6 @@ env/
 .planning/
 
 # Phase 0 test data + local analysis (not versioned)
-phase0_data/
+phase0_test/phase0_data/
 *.csv
-phase0_analyze.py
+phase0_test/phase0_analyze.py

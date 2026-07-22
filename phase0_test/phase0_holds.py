@@ -24,10 +24,10 @@ Two subplots (one per sensor): settled length at the A and B extremes vs the
 cycle's ramp duration, with per-series mean±σ, peak-to-peak, and slope
 (mm per second of ramp) reported. A PNG is saved next to the CSV.
 
-Usage:
-    python phase0_holds.py                 # newest CSV in phase0_data/
-    python phase0_holds.py path/to/run.csv
-    python phase0_holds.py --settle-frac 0.5 --no-show
+Usage (runnable from any working directory):
+    python phase0_test/phase0_holds.py               # newest CSV in phase0_data/
+    python phase0_test/phase0_holds.py path/to/run.csv
+    python phase0_test/phase0_holds.py --settle-frac 0.5 --no-show
 """
 
 from __future__ import annotations
