@@ -28,6 +28,8 @@ from collections import deque
 import serial
 import serial.tools.list_ports
 
+from encoder_controller import is_ch9344_port
+
 
 NUM_VALVES = 16
 ROW_SIZE = 8
@@ -95,6 +97,13 @@ class ValveController:
 
         if not ports:
             print("[ERR] No serial ports found!")
+            return False
+
+        # Skip the EKU081 RS-485 adapter's nodes (ttyCH9344USB*): they belong to
+        # the encoder bus, and their names would otherwise match 'USB' below.
+        ports = [p for p in ports if not is_ch9344_port(p.device)]
+        if not ports:
+            print("[ERR] No non-RS485 serial ports found!")
             return False
 
         for port in ports:
