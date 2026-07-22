@@ -15,13 +15,16 @@ ports, one serial open/close per read). This module instead:
   - handles "zero" / "clear zero" as method calls driven by the web UI
     instead of keystrokes.
 
-Hardware: GJW absolute encoders on one RS-485 bus, reached through a
-USB↔RS-485 adapter (typically /dev/ttyUSB0 on Linux, COMx on Windows).
+Hardware: GJW absolute encoders on one RS-485 bus, reached through the EKU081
+8-port USB↔RS-485 adapter (WCH CH9344), which enumerates as /dev/ttyCH9344USB0
+… USB7 on Linux (COMx on Windows).
 """
 
 from __future__ import annotations
 
+import glob
 import math
+import re
 import threading
 import time
 from collections import deque
@@ -41,6 +44,31 @@ from modbus_rtu import (
     decode_gjw_state_registers,
     parse_read_registers_response,
 )
+
+
+# EKU081 8-port USB↔RS-485 adapter (WCH CH9344). Its vendor driver creates one
+# node per port — /dev/ttyCH9344USB0 … USB7 — and, being out of tree, those
+# nodes are not always enumerated by pyserial, so we glob /dev as well.
+# ttyCH343USB* covers the 1/2-port CH343 sibling driver.
+CH9344_PREFIXES = ("ttyCH9344", "ttyCH343")
+CH9344_GLOBS = ("/dev/ttyCH9344USB*", "/dev/ttyCH343USB*")
+
+
+def is_ch9344_port(device: str) -> bool:
+    """True for a device node of the CH9344/CH343 USB↔RS-485 adapter."""
+    return any(pre in (device or "") for pre in CH9344_PREFIXES)
+
+
+def port_index(device: str) -> int:
+    """Trailing number of a device node, for lowest-port-first ordering."""
+    m = re.search(r"(\d+)$", device or "")
+    return int(m.group(1)) if m else 0
+
+
+def list_ch9344_ports() -> List[str]:
+    """CH9344 device nodes present in /dev, lowest port number first."""
+    return sorted({d for pat in CH9344_GLOBS for d in glob.glob(pat)},
+                  key=port_index)
 
 
 DEFAULT_COUNTS_PER_TURN = 2_097_152  # 21-bit single-turn resolution
@@ -141,8 +169,12 @@ class EncoderController:
     @staticmethod
     def list_ports():
         """Return a list of (device, description) tuples for available ports."""
-        return [(p.device, p.description)
-                for p in serial.tools.list_ports.comports()]
+        found = [(p.device, p.description)
+                 for p in serial.tools.list_ports.comports()]
+        seen = {dev for dev, _ in found}
+        found += [(d, "CH9344 USB-RS485 (EKU081)")
+                  for d in list_ch9344_ports() if d not in seen]
+        return found
 
     def auto_connect(self) -> bool:
         """Auto-detect and connect to a USB↔RS-485 adapter."""
@@ -152,12 +184,27 @@ class EncoderController:
         for i, port in enumerate(ports):
             print(f"  [{i}] {port.device} - {port.description}")
 
+        # The EKU081 (CH9344) is the station's adapter: try its 8 nodes first,
+        # lowest port number first. Globbed, since the out-of-tree driver's
+        # nodes may be missing from comports() above.
+        ch9344 = list_ch9344_ports()
+        for dev in ch9344:
+            print(f"  [ch9344] {dev}")
+        for dev in ch9344:
+            try:
+                print(f"\nTrying {dev}...")
+                self.connect(dev)
+                return True
+            except Exception as e:
+                print(f"  Failed: {e}")
+
         if not ports:
-            print("[ERR] No serial ports found!")
+            if not ch9344:
+                print("[ERR] No serial ports found!")
             return False
 
-        # RS-485 adapters usually enumerate as USB serial (ttyUSB* / ttyACM* on
-        # Linux, or by a FTDI/CH340/CP210x description).
+        # Otherwise fall back to a generic USB serial bridge (ttyUSB* / ttyACM*
+        # on Linux, or a FTDI/CH340/CP210x description).
         for port in ports:
             desc = port.description or ""
             if ("USB" in port.device or "ACM" in port.device

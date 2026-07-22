@@ -7,9 +7,10 @@ serial devices of the station over two separate USB ports:
 
   - Arduino Giga R1 (valve regulator) — valve control, via ValveController
     (vc2/vc2.ino protocol). Enumerates as e.g. /dev/ttyACM0 "Arduino Giga".
-  - USB↔RS-485 adapter (GJW encoders) — position/turns/speed readout, via
-    EncoderController (Modbus RTU). Enumerates as e.g. /dev/ttyACM1
-    "USB Single Serial" (a CH34x/WCH bridge).
+  - EKU081 8-port USB↔RS-485 adapter (GJW encoders) — position/turns/speed
+    readout, via EncoderController (Modbus RTU). Its WCH CH9344 driver creates
+    one node per port: /dev/ttyCH9344USB0 … USB7. The encoder bus defaults to
+    the lowest-numbered node; use --rs485-port to pick another.
 
 Both ports are opened at once, so the browser can command valves and watch the
 encoders live side by side. Either device may be absent — the app runs with
@@ -17,13 +18,14 @@ whichever it can open.
 
 Usage:
     python app.py                                   # auto-detect both ports
-    python app.py --valve-port /dev/ttyACM0 --rs485-port /dev/ttyACM1
-    python app.py --rs485-port /dev/ttyACM1 --no-valves
+    python app.py --valve-port /dev/ttyACM0 --rs485-port /dev/ttyCH9344USB0
+    python app.py --rs485-port /dev/ttyCH9344USB3 --no-valves
     python app.py --ids 50-80 --baud 115200 --parity N
 """
 
 import argparse
 import time
+from types import SimpleNamespace
 
 import serial.tools.list_ports
 from flask import Flask, render_template, jsonify
@@ -34,7 +36,10 @@ from encoder_controller import (
     DEFAULT_COUNTS_PER_TURN,
     DEFAULT_DRUM_DIAMETER_MM,
     EncoderController,
+    is_ch9344_port,
+    list_ch9344_ports,
     parse_slave_ids,
+    port_index,
 )
 from sensor_mapping import DEFAULT_MAPPING_PATH, load_mapping
 from length_controller import (
@@ -90,12 +95,21 @@ def muscle_max(reg):
 # ============================================================
 
 def _usb_ports():
-    """Serial ports that look like real USB/CDC devices (skip ttyS*)."""
+    """Serial ports that look like real USB/CDC devices (skip ttyS*).
+
+    Includes the EKU081's /dev/ttyCH9344USB* nodes, merged in from a /dev glob
+    because the out-of-tree CH9344 driver is not always visible to pyserial.
+    """
     out = []
     for p in serial.tools.list_ports.comports():
         dev = p.device or ""
-        if "ttyACM" in dev or "ttyUSB" in dev or dev.upper().startswith("COM"):
+        if ("ttyACM" in dev or "ttyUSB" in dev or is_ch9344_port(dev)
+                or dev.upper().startswith("COM")):
             out.append(p)
+    seen = {p.device for p in out}
+    out += [SimpleNamespace(device=d, description="CH9344 USB-RS485 (EKU081)",
+                            hwid="USB VID:PID=1a86:CH9344")
+            for d in list_ch9344_ports() if d not in seen]
     return out
 
 
@@ -114,10 +128,12 @@ def _is_giga(p):
 
 
 def _is_rs485_bridge(p):
-    """USB↔RS-485 adapters: common bridge chips + generic 'usb serial'."""
+    """USB↔RS-485 adapters: the EKU081 first, then common bridge chips."""
+    if is_ch9344_port(p.device):
+        return True
     b = _blob(p)
     return any(k in b for k in (
-        "1a86", "ch340", "ch343", "single serial",   # WCH (this station's adapter)
+        "1a86", "ch340", "ch343", "ch9344", "single serial",  # WCH
         "0403", "ftdi",                               # FTDI
         "10c4", "cp210",                              # Silicon Labs
         "rs485", "rs-485", "usb serial", "usb-serial",
@@ -130,16 +146,23 @@ def resolve_ports(args):
 
     valve_port = args.valve_port
     if not valve_port and not args.no_valves:
-        valve_port = next((p.device for p in ports if _is_giga(p)), None)
+        # A CH9344 node is never the regulator, whatever its description says.
+        valve_port = next((p.device for p in ports
+                           if _is_giga(p) and not is_ch9344_port(p.device)), None)
 
     rs485_port = args.rs485_port
     if not rs485_port and not args.no_encoders:
-        rs485_port = next(
-            (p.device for p in ports
-             if p.device != valve_port and _is_rs485_bridge(p)), None)
-        if not rs485_port:  # fall back to any other USB port
+        others = [p for p in ports if p.device != valve_port]
+        # The EKU081 (CH9344) is the station's adapter — its lowest-numbered
+        # port carries the encoder bus; pass --rs485-port to use another.
+        ch9344 = sorted((p.device for p in others if is_ch9344_port(p.device)),
+                        key=port_index)
+        rs485_port = ch9344[0] if ch9344 else None
+        if not rs485_port:
             rs485_port = next(
-                (p.device for p in ports if p.device != valve_port), None)
+                (p.device for p in others if _is_rs485_bridge(p)), None)
+        if not rs485_port:  # fall back to any other USB port
+            rs485_port = next((p.device for p in others), None)
 
     if valve_port and rs485_port and valve_port == rs485_port:
         raise SystemExit(
@@ -469,7 +492,8 @@ def main():
     parser.add_argument('--valve-port', default=None,
                         help='Serial port of the Giga R1 regulator (e.g. /dev/ttyACM0)')
     parser.add_argument('--rs485-port', default=None,
-                        help='Serial port of the USB↔RS-485 adapter (e.g. /dev/ttyACM1)')
+                        help='Serial port of the EKU081 USB↔RS-485 adapter '
+                             '(e.g. /dev/ttyCH9344USB0)')
     parser.add_argument('--no-valves', action='store_true',
                         help='Do not open the valve regulator')
     parser.add_argument('--no-encoders', action='store_true',

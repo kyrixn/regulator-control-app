@@ -25,7 +25,7 @@ running at the same time (it would hold the serial ports).
 
 Usage:
     python Phase0test.py
-    python Phase0test.py --valve-port /dev/ttyACM0 --rs485-port /dev/ttyACM1
+    python Phase0test.py --valve-port /dev/ttyACM0 --rs485-port /dev/ttyCH9344USB0
     python Phase0test.py --cycles 20 --sample-hz 50 --out phase0_data
 """
 
@@ -45,6 +45,8 @@ from encoder_controller import (
     DEFAULT_COUNTS_PER_TURN,
     DEFAULT_DRUM_DIAMETER_MM,
     EncoderController,
+    is_ch9344_port,
+    list_ch9344_ports,
 )
 from sensor_mapping import load_mapping
 
@@ -78,18 +80,24 @@ def _blob(p):
 
 def find_ports(valve_port, rs485_port):
     ports = [p for p in serial.tools.list_ports.comports()
-             if "ttyACM" in p.device or "ttyUSB" in p.device
-             or p.device.upper().startswith("COM")]
+             if ("ttyACM" in p.device or "ttyUSB" in p.device
+                 or p.device.upper().startswith("COM"))
+             and not is_ch9344_port(p.device)]
     if not valve_port:
         valve_port = next(
             (p.device for p in ports
              if any(k in _blob(p) for k in ("giga", "arduino", "2341:"))), None)
     if not rs485_port:
-        rs485_port = next(
-            (p.device for p in ports
-             if p.device != valve_port and any(k in _blob(p) for k in (
-                 "1a86", "ch340", "ch343", "single serial",
-                 "0403", "ftdi", "10c4", "cp210"))), None)
+        # EKU081 8-port adapter (CH9344): globbed from /dev, since its
+        # out-of-tree driver may not show up in comports(). Lowest port first.
+        ch9344 = [d for d in list_ch9344_ports() if d != valve_port]
+        rs485_port = ch9344[0] if ch9344 else None
+        if not rs485_port:
+            rs485_port = next(
+                (p.device for p in ports
+                 if p.device != valve_port and any(k in _blob(p) for k in (
+                     "1a86", "ch340", "ch343", "ch9344", "single serial",
+                     "0403", "ftdi", "10c4", "cp210"))), None)
         if not rs485_port:
             rs485_port = next(
                 (p.device for p in ports if p.device != valve_port), None)

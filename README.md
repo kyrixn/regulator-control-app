@@ -15,13 +15,24 @@ with the display and zeroing moved into the browser.
 | Device                         | Role          | Enumerates as (this station)          |
 |--------------------------------|---------------|---------------------------------------|
 | Arduino Giga R1 (regulator)    | Valve control | `/dev/ttyACM0` — `Arduino Giga` (2341) |
-| USB↔RS-485 adapter             | Encoder read  | `/dev/ttyACM1` — `USB Single Serial` (WCH 1A86) |
+| EKU081 8-port USB↔RS-485       | Encoder read  | `/dev/ttyCH9344USB0` … `USB7` (WCH CH9344) |
 
-Both enumerate as `ttyACM*` here, so the app **auto-detects by device
-identity** (VID / product string), not by port name — the Giga is matched by
-`Arduino`/`Giga`/`2341`, the adapter by known bridge chips (WCH/FTDI/CP210x) or
-a generic "USB serial". Pass `--valve-port` / `--rs485-port` to override, and
-`--no-valves` / `--no-encoders` to run just one side.
+The adapter's vendor driver (`ch9344`) creates one node per port, so the
+encoder bus is found **by port name**: the app takes the lowest-numbered
+`ttyCH9344USB*` node. Those nodes come from an out-of-tree driver and are not
+always listed by pyserial, so `/dev` is globbed as well. The Giga is still
+matched **by device identity** (`Arduino`/`Giga`/`2341`), and CH9344 nodes are
+excluded from valve detection. If no CH9344 node exists, detection falls back
+to the old behaviour (known bridge chips WCH/FTDI/CP210x, then any other USB
+serial port).
+
+Pass `--valve-port` / `--rs485-port` to override — use `--rs485-port` if the
+encoders are on a port other than `USB0`, e.g. `--rs485-port
+/dev/ttyCH9344USB3` — and `--no-valves` / `--no-encoders` to run just one side.
+
+If no `/dev/ttyCH9344USB*` nodes appear at all, the CH9344 kernel module isn't
+loaded (check `lsmod | grep ch9344`; the WCH driver must be built/installed for
+the running kernel).
 
 ## Features
 
@@ -81,8 +92,8 @@ pip install -r requirements.txt
 
 ```bash
 python app.py                                        # auto-detect both ports
-python app.py --valve-port /dev/ttyACM0 --rs485-port /dev/ttyACM1
-python app.py --rs485-port /dev/ttyACM1 --no-valves  # encoders only
+python app.py --valve-port /dev/ttyACM0 --rs485-port /dev/ttyCH9344USB0
+python app.py --rs485-port /dev/ttyCH9344USB3 --no-valves  # encoders only
 python app.py --ids 50-80 --baud 115200 --parity N
 ```
 
@@ -93,7 +104,7 @@ Then open <http://localhost:5000>.
 | Option              | Default   | Description                                     |
 |---------------------|-----------|-------------------------------------------------|
 | `--valve-port`      | auto      | Giga R1 regulator port                          |
-| `--rs485-port`      | auto      | USB↔RS-485 adapter port                         |
+| `--rs485-port`      | auto      | EKU081 port (auto = lowest `ttyCH9344USB*`)     |
 | `--no-valves`       | off       | Don't open the valve regulator                  |
 | `--no-encoders`     | off       | Don't open the RS-485 encoder bus               |
 | `--ids`             | `50-80`   | Encoder slave ids (ranges + lists: `50-80,90`)  |
