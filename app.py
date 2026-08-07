@@ -152,7 +152,7 @@ def _muscles_state(enc_state):
     """One entry per regulator, joined with its mapped sensor's length.
 
     Kept separate from the valve `active` map (which only lists valves with a
-    live setpoint) so all 16 length bars render whether or not the valve is on.
+    live setpoint) so all length bars render whether or not the valve is on.
     """
     positions = {
         e["slave"]: (e.get("position_mm"), bool(e.get("online")))

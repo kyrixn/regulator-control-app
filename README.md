@@ -40,13 +40,14 @@ the running kernel).
 > standalone encoder table is gone; each regulator's bar now shows its muscle's
 > **length**, joined to a sensor through `sensor_mapping.json`.
 
-**Regulators + muscles** — the 16-cell grid stays, but each cell now shows its
+**Regulators + muscles** — the 32-cell grid (4 rows of 8: V0–15 on Wire, V16–31
+on Wire1) is built from the server's reported `num_valves`, and each cell shows its
 muscle's **length (mm)** as the bar (from the mapped sensor, scaled to a
 configurable band, default **−10…2 mm**) and that regulator's **pressure** as
 text (a dash `–` when the valve is off). Per-valve set boxes, APPLY ALL, STOP,
 ? STATUS, and TIME ramping are unchanged.
 
-**Sensor mapping** — `sensor_mapping.json` ties each regulator (valve id 0–15)
+**Sensor mapping** — `sensor_mapping.json` ties each regulator (valve id 0–31)
 to the sensor (RS-485 slave id) measuring its muscle. Edit it to match wiring;
 edits apply on the next **RESCAN** (no restart). Unmapped regulators show an
 empty bar.

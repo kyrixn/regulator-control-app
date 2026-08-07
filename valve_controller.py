@@ -2,19 +2,20 @@
 """
 valve_controller.py
 
-Serial layer for the vc2 16-valve controller, adapted from vc2/vc2_control.py
+Serial layer for the vc2 32-valve controller, adapted from vc2/vc2_control.py
 for use in the web app. The matplotlib display has been removed; this module
 only owns the serial connection, a background read thread, and the parsed
 valve state.
 
 Hardware target: Arduino Giga R1 running vc2/vc2.ino.
-  - Valves  0..7  on Wire   (SDA/SCL)
-  - Valves  8..15 on Wire1  (SDA1/SCL1)
+  16 GP8403 DACs (8 per I2C bus, 2 channels each = 32 valves):
+  - Valves  0..15  on Wire   (SDA/SCL)
+  - Valves 16..31  on Wire1  (SDA1/SCL1)
 
 Arduino command set (Serial @ 115200):
-  valve,value          Set single valve: 0,3000 or 9,2100
-  v1,val1,v2,val2,...  Set multiple valves: 0,3000,9,2500
-  valve,off            Turn off a valve: 9,off
+  valve,value          Set single valve: 0,3000 or 20,2100
+  v1,val1,v2,val2,...  Set multiple valves: 0,3000,20,2500
+  valve,off            Turn off a valve: 20,off
   s                    Emergency stop (all valves off)
   ?                    Query status of all valves
   p                    Ping test
@@ -31,8 +32,9 @@ import serial.tools.list_ports
 from encoder_controller import is_ch9344_port
 
 
-NUM_VALVES = 16
+NUM_VALVES = 32
 ROW_SIZE = 8
+BUS_SPLIT = 16          # valves 0..15 -> Wire, 16..31 -> Wire1
 MAX_INPUT_VALUE = 4000  # mV or kPa — never send values above this
 RAMP_STEP = 0.04        # seconds between setpoints while ramping (~25 Hz)
 
@@ -48,7 +50,7 @@ def mv_to_bar(mV):
 
 
 class ValveController:
-    """16-valve serial interface (headless)."""
+    """32-valve serial interface (headless)."""
 
     def __init__(self, port=None, baudrate=115200):
         self.ser = None
@@ -177,7 +179,7 @@ class ValveController:
             self.message_queue.append(line)
             return
 
-        # Status query response: "V0=val | V1=val | ... | V15=val"
+        # Status query response: "V0=val | V1=val | ... | V31=val"
         if line.startswith("V") and "=" in line and "|" in line:
             matches = re.findall(r'V(\d+)=(-?\d+)', line)
             with self.display_lock:
@@ -392,6 +394,8 @@ class ValveController:
             "connected": self.connected,
             "port": self.port_name,
             "num_valves": NUM_VALVES,
+            "row_size": ROW_SIZE,
+            "bus_split": BUS_SPLIT,
             "max_value": MAX_INPUT_VALUE,
             "valves": valves,
             "active": len(valves),

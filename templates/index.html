@@ -20,16 +20,8 @@
   <section class="panel" id="valvePanel">
     <h2 class="panel-title">Valves <span class="src">— Arduino Giga R1</span></h2>
     <div class="panel-body">
-      <div class="rows">
-        <div class="row-block">
-          <h3 class="row-title">Valves 0–7 <span class="bus">(Wire)</span></h3>
-          <div class="valve-row" id="row0"></div>
-        </div>
-        <div class="row-block">
-          <h3 class="row-title">Valves 8–15 <span class="bus">(Wire1)</span></h3>
-          <div class="valve-row" id="row1"></div>
-        </div>
-      </div>
+      <!-- Rows are built by app.js from the server's num_valves/row_size. -->
+      <div class="rows" id="rows"></div>
       <aside class="controls">
         <button id="btnStop" class="btn btn-stop">STOP</button>
         <button id="btnApply" class="btn btn-apply">APPLY ALL</button>

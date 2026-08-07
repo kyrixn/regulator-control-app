@@ -1,22 +1,47 @@
 // Front-end for the vc2 pneumatic station web app (controller branch).
-// Each of the 16 valve cells now shows its muscle's LENGTH (mm, from the mapped
+// Each of the 32 valve cells now shows its muscle's LENGTH (mm, from the mapped
 // sensor) as a bar and the regulator's PRESSURE as text. The standalone encoder
 // table is gone; sensors are zeroed per-cell or globally.
 
-const NUM_VALVES = 16;
+// Layout defaults; reconciled with the server's reported num_valves/row_size/
+// bus_split so the grid follows the Arduino build (16 DACs -> 32 valves).
+let NUM_VALVES = 32;
+let ROW_SIZE = 8;
+let BUS_SPLIT = 16;           // valves below this are on Wire, at/above on Wire1
 let MAX_VALUE = 4000;         // valve setpoint limit, overwritten by server state
 
 const socket = io();
 const valveEls = [];          // index -> { input, bar, label, cell, id, zeroBtn, sensor }
 
 // ------------------------------------------------------------------
-// Build the two rows of 8 valves
+// Build the valve grid: ceil(NUM_VALVES / ROW_SIZE) rows of ROW_SIZE cells.
 // ------------------------------------------------------------------
+function busName(valve) {
+  return valve < BUS_SPLIT ? 'Wire' : 'Wire1';
+}
+
 function buildValves() {
-  for (let row = 0; row < 2; row++) {
-    const container = document.getElementById(`row${row}`);
-    const lo = row * 8;
-    for (let i = lo; i < lo + 8; i++) {
+  const rows = document.getElementById('rows');
+  rows.innerHTML = '';
+  valveEls.length = 0;
+
+  const numRows = Math.ceil(NUM_VALVES / ROW_SIZE);
+  for (let row = 0; row < numRows; row++) {
+    const lo = row * ROW_SIZE;
+    const hi = Math.min(lo + ROW_SIZE - 1, NUM_VALVES - 1);
+
+    const block = document.createElement('div');
+    block.className = 'row-block';
+    const title = document.createElement('h3');
+    title.className = 'row-title';
+    title.innerHTML = `Valves ${lo}–${hi} <span class="bus">(${busName(lo)})</span>`;
+    const valveRow = document.createElement('div');
+    valveRow.className = 'valve-row';
+    block.appendChild(title);
+    block.appendChild(valveRow);
+    rows.appendChild(block);
+
+    for (let i = lo; i <= hi; i++) {
       const cell = document.createElement('div');
       cell.className = 'valve';
 
@@ -59,10 +84,23 @@ function buildValves() {
       cell.appendChild(id);
       cell.appendChild(input);
       cell.appendChild(zeroBtn);
-      container.appendChild(cell);
+      valveRow.appendChild(cell);
 
       valveEls[i] = { input, bar, label, press, len, cell, id, zeroBtn, sensor: null };
     }
+  }
+}
+
+// Rebuild the grid if the server reports a different geometry than we drew.
+function reconcileLayout(vstate) {
+  const n = vstate.num_valves || NUM_VALVES;
+  const rs = vstate.row_size || ROW_SIZE;
+  const bs = (vstate.bus_split ?? BUS_SPLIT);
+  if (n !== NUM_VALVES || rs !== ROW_SIZE || bs !== BUS_SPLIT) {
+    NUM_VALVES = n;
+    ROW_SIZE = rs;
+    BUS_SPLIT = bs;
+    buildValves();
   }
 }
 
@@ -162,6 +200,7 @@ function renderValves(state) {
 
   if (vstate) {
     panel.classList.remove('disabled');
+    reconcileLayout(vstate);
     MAX_VALUE = vstate.max_value || MAX_VALUE;
     document.getElementById('maxHint').textContent = MAX_VALUE;
   } else {
