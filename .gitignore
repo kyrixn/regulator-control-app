@@ -10,7 +10,7 @@ env/
 .vscode/
 .planning/
 
-# Phase 0 test data + local analysis (not versioned)
-phase0_test/phase0_data/
+# Phase 0 test scripts + data: kept on the `experiment` branch only
+phase0_test/
+phase0_data/
 *.csv
-phase0_test/phase0_analyze.py
