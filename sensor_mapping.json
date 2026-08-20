@@ -1,5 +1,5 @@
 {
-  "_comment": "Maps each regulator (valve id 0-15) to the sensor (RS-485 slave id) measuring its muscle's length. Edit sensor ids to match wiring; use null to leave a regulator unmapped. Edits take effect on the next RESCAN.",
+  "_comment": "Maps each regulator (valve id 0-31) to the sensor (RS-485 slave id) measuring its muscle's length. Edit sensor ids to match wiring; use null to leave a regulator unmapped. Edits take effect on the next RESCAN.",
   "muscles": [
     { "muscle": "muscle_00", "regulator": 8,  "sensor": 57 },
     { "muscle": "muscle_01", "regulator": 9,  "sensor": 58 },

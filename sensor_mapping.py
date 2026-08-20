@@ -3,7 +3,7 @@
 sensor_mapping.py
 
 Loads the sensor↔regulator mapping used by the closed-loop groundwork. Each
-*muscle* (tendon) is driven by one pneumatic *regulator* (valve id 0-15) and its
+*muscle* (tendon) is driven by one pneumatic *regulator* (valve id 0-31) and its
 length is measured by one draw-wire *sensor* (RS-485 encoder slave id). This
 module turns ``sensor_mapping.json`` into a lookup keyed by regulator (valve id)
 so the web layer can attach each valve's mapped sensor position to its bar.
@@ -21,6 +21,11 @@ from typing import Dict, Optional, TypedDict
 
 
 DEFAULT_MAPPING_PATH = os.path.join(os.path.dirname(__file__), "sensor_mapping.json")
+
+# Highest regulator (valve id) the station has: 32 valves, 0-31, matching
+# valve_controller.NUM_VALVES. Kept as a literal so this module stays free of
+# the pyserial-dependent valve layer.
+MAX_REGULATOR = 31
 
 
 class MuscleMap(TypedDict):
@@ -57,7 +62,7 @@ def load_mapping(path: str = DEFAULT_MAPPING_PATH) -> Dict[int, MuscleMap]:
             regulator = int(entry["regulator"])
         except (KeyError, ValueError, TypeError):
             continue
-        if not 0 <= regulator <= 15:
+        if not 0 <= regulator <= MAX_REGULATOR:
             continue
 
         sensor = entry.get("sensor")
