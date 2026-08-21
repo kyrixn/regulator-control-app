@@ -14,3 +14,6 @@ env/
 phase0_test/phase0_data/
 *.csv
 phase0_test/phase0_analyze.py
+
+# Transient e-stop trigger for fcu_fcr_cycle_test.py (touch it to abort a run)
+phase0_test/STOP
