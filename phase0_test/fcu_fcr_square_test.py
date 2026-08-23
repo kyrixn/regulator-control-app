@@ -43,7 +43,10 @@ Written to phase0_test/phase0_data/wrist_flex/ (git-ignored):
     fcu_fcr_square_2hz_<stamp>_steps.png    3-panel summary figure
 
 Nothing is written unless the run completes — Ctrl-C, SIGTERM, the stop-file
-and the runtime watchdog all discard the buffer.
+and the runtime watchdog all discard the buffer. A completed run then asks
+before writing anything — answer y to keep it, anything else (including a bare
+Enter) throws it away. Pass -y to skip the question; a non-interactive run
+keeps its data rather than prompting.
 
 Emergency stop and port/mapping handling are shared with fcu_fcr_cycle_test.py
 rather than duplicated, so both scripts stop the same way:
@@ -83,6 +86,7 @@ from fcu_fcr_cycle_test import (
     DEFAULT_STOP_FILE,
     LEN_DECIMALS,
     RUNTIME_MARGIN_S,
+    confirm_save,
     find_ports,
     install_signal_handlers,
     resolve_muscles,
@@ -98,9 +102,9 @@ from fcu_fcr_cycle_test import (
 MOVING = ("FCU", "FCR")                 # stepped together, in phase
 VENTED = ("FDS", "ECU", "ECR", "PT")    # commanded off throughout
 
-LOW_MV = 1800
-HIGH_MV = 2300
-FREQ_HZ = 2.0                   # full cycles per second
+LOW_MV = 1900
+HIGH_MV = 2200
+FREQ_HZ = 5                # full cycles per second
 DURATION_S = 4.0                # length of the square-wave burst
 SETTLE_S = 2.0                  # dwell at low before zeroing
 TAIL_S = 0.5                    # extra recording at low after the burst
@@ -494,8 +498,11 @@ def run(args):
             print(f"[STOP] discarded {n} sample(s); nothing written to "
                   f"{os.path.abspath(args.out)}")
         elif rec is not None and rec.rows:
-            csv_path = save_csv(rec.rows, args.out, args.freq)
-            print(f"\nSaved {len(rec.rows)} samples to {os.path.abspath(csv_path)}")
+            if confirm_save(len(rec.rows), os.path.abspath(args.out), args.yes):
+                csv_path = save_csv(rec.rows, args.out, args.freq)
+                print(f"Saved {len(rec.rows)} samples to {os.path.abspath(csv_path)}")
+            else:
+                print(f"[INFO] not saved — discarded {len(rec.rows)} sample(s).")
 
         valve.close()
         encoder.close()
@@ -676,6 +683,8 @@ def build_parser():
                    help="hard ceiling in seconds before the run self-aborts")
     p.add_argument("--dry-run", action="store_true",
                    help="resolve the mapping and print the plan, touch no hardware")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="save without asking (default is to prompt after the run)")
     p.add_argument("--no-live", action="store_true", help="skip the live window")
     p.add_argument("--live-fps", type=float, default=20.0,
                    help="live view redraw rate (default 20)")

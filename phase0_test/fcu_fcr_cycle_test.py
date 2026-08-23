@@ -39,7 +39,10 @@ run, git-ignored):
 
 Nothing is written unless the run completes: Ctrl-C, SIGTERM, the stop-file and
 the runtime watchdog all discard the buffer, so the folder only ever holds full
-runs.
+runs. A completed run then asks before writing anything — answer y to keep it,
+anything else (including a bare Enter) throws it away. Pass -y to skip the
+question, and note that a non-interactive run keeps its data rather than
+prompting.
 
 A live window (length + commanded pressure) is shown while the sequence runs,
 updating from the recorder's buffer at --live-fps. It is drawn on the main
@@ -308,6 +311,46 @@ def install_signal_handlers(valve):
             signal.signal(sig, handler)
         except (ValueError, OSError):
             pass        # not the main thread, or unsupported platform
+
+
+def restore_signal_handlers():
+    """Hand SIGINT/SIGTERM back to Python once the rig is vented.
+
+    Called before prompting: with the e-stop handler still installed, Ctrl-C at
+    the prompt would print an e-stop banner and leave input() waiting, instead
+    of simply answering "no".
+    """
+    for sig, handler in ((signal.SIGINT, signal.default_int_handler),
+                         (signal.SIGTERM, signal.SIG_DFL)):
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):
+            pass
+
+
+def confirm_save(n_samples, out_dir, assume_yes=False):
+    """Ask whether this completed run is worth keeping. True to save.
+
+    Defaults to NOT saving, because most runs are throwaway and the folder is
+    the thing that gets cluttered. A run costs seconds to repeat; a directory
+    of near-identical files costs more to sort out later.
+
+    Runs with no terminal attached keep the data instead of prompting, so a
+    scripted or piped invocation cannot hang or silently discard a result.
+    """
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        print("[INFO] not a terminal — keeping the run automatically")
+        return True
+    restore_signal_handlers()
+    try:
+        answer = input(f"\nRun complete: {n_samples} sample(s). "
+                       f"Save to {out_dir}? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer in ("y", "yes")
 
 
 def start_watchdog(valve, stop_file, max_runtime):
@@ -756,8 +799,11 @@ def run(args):
             print(f"[STOP] discarded {n} sample(s); nothing written to "
                   f"{os.path.abspath(args.out)}")
         elif rec is not None and rec.rows:
-            csv_path = save_csv(rec.rows, args.out)
-            print(f"\nSaved {len(rec.rows)} samples to {os.path.abspath(csv_path)}")
+            if confirm_save(len(rec.rows), os.path.abspath(args.out), args.yes):
+                csv_path = save_csv(rec.rows, args.out)
+                print(f"Saved {len(rec.rows)} samples to {os.path.abspath(csv_path)}")
+            else:
+                print(f"[INFO] not saved — discarded {len(rec.rows)} sample(s).")
 
         valve.close()
         encoder.close()
@@ -944,6 +990,8 @@ def build_parser():
                         "(default: planned duration + 30 s)")
     p.add_argument("--dry-run", action="store_true",
                    help="resolve the mapping and print the plan, touch no hardware")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="save without asking (default is to prompt after the run)")
     p.add_argument("--no-live", action="store_true",
                    help="skip the live window; record and plot at the end only")
     p.add_argument("--live-fps", type=float, default=20.0,
