@@ -109,13 +109,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ---- Test definition ------------------------------------------------------
 
 # Muscles held at a fixed setpoint for the whole run.
-FIXED = {"FDS": 1950, "ECU": 1950, "ECR": 1950, "PT": 1900}
+FIXED = {"FDS": 1950, "ECU": 1900, "ECR": 1900, "PT": 2000}
 
 # The two muscles under test; both are commanded to the same value each phase.
 MOVING = ("FCU", "FCR")
 
-PHASE1_MV = 2000        # init
-PHASE2_MV = 2250      # up
+PHASE1_MV = 2100        # init
+PHASE2_MV = 2300      # up
 PHASE3_MV = 1900        # down
 
 INIT_RAMP_S = 1.0       # gentle ramp from vented up to the phase 1 setpoints
