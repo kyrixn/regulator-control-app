@@ -27,37 +27,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import serial  # noqa: E402
-
 from encoder_controller import DEFAULT_COUNTS_PER_TURN, DEFAULT_DRUM_DIAMETER_MM  # noqa: E402
-from modbus_rtu import (  # noqa: E402
-    GJW_STATE_COUNT,
-    GJW_STATE_REGISTER,
-    READ_FUNCTIONS,
-    build_read_request,
-    compute_absolute_position,
-    decode_gjw_state_registers,
-    parse_read_registers_response,
-)
+from finger.rs485 import Bus, open_port  # noqa: E402
 from sensor_mapping import DEFAULT_MAPPING_PATH, load_mapping  # noqa: E402
-
-
-def read_once(ser: serial.Serial, slave: int) -> tuple[dict | None, str]:
-    """One Modbus read. Returns (state, outcome) with outcome ok/timeout/error."""
-    request = build_read_request(slave, READ_FUNCTIONS["holding"],
-                                 GJW_STATE_REGISTER, GJW_STATE_COUNT)
-    ser.reset_input_buffer()
-    ser.write(request)
-    header = ser.read(3)
-    if len(header) != 3:
-        return None, "timeout"
-    body = ser.read(2 if header[1] & 0x80 else header[2] + 2)
-    try:
-        regs = parse_read_registers_response(header + body, slave,
-                                             READ_FUNCTIONS["holding"], GJW_STATE_COUNT)
-    except Exception:
-        return None, "error"
-    return decode_gjw_state_registers(regs), "ok"
 
 
 def main() -> int:
@@ -79,8 +51,7 @@ def main() -> int:
     print(f"port {args.port} @ {args.baud} 8N1, timeout {args.timeout}s")
     print("sensors:", ", ".join(f"{name}=id{sid} (V{reg})" for sid, name, reg in sensors))
 
-    ser = serial.Serial(args.port, args.baud, bytesize=8, parity="N", stopbits=1,
-                        timeout=args.timeout)
+    bus = Bus(open_port(args.port, args.baud, args.timeout), DEFAULT_COUNTS_PER_TURN)
     mm_per_count = math.pi * DEFAULT_DRUM_DIAMETER_MM / DEFAULT_COUNTS_PER_TURN
 
     lat = {sid: [] for sid, _, _ in sensors}
@@ -95,21 +66,15 @@ def main() -> int:
         t_sweep = time.monotonic()
         for sid, name, _ in sensors:
             t0 = time.monotonic()
-            state, res = read_once(ser, sid)
-            t1 = time.monotonic()
-            outcome[sid][res] += 1
-            lat[sid].append(t1 - t0)
-            abs_pos = None
-            if state:
-                abs_pos = compute_absolute_position(state["single_turn_position"],
-                                                    state["turns"], DEFAULT_COUNTS_PER_TURN)
-                counts[sid].append(abs_pos)
-                status[sid].add(state["status_code"])
-            rows.append((t1, sid, name, res, abs_pos,
-                         state["status_code"] if state else None,
-                         state["error_count"] if state else None))
+            rd = bus.read(sid)
+            outcome[sid][rd.outcome] += 1
+            lat[sid].append(rd.t - t0)
+            if rd.ok:
+                counts[sid].append(rd.counts)
+                status[sid].add(rd.status)
+            rows.append((rd.t, sid, name, rd.outcome, rd.counts, rd.status, rd.error_count))
         sweeps.append(time.monotonic() - t_sweep)
-    ser.close()
+    bus.close()
 
     if args.log:
         os.makedirs(os.path.dirname(args.log) or ".", exist_ok=True)
