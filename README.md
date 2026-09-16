@@ -43,9 +43,14 @@ the running kernel).
 **Regulators + muscles** — the 32-cell grid (4 rows of 8: V0–15 on Wire, V16–31
 on Wire1) is built from the server's reported `num_valves`, and each cell shows its
 muscle's **length (mm)** as the bar (from the mapped sensor, scaled to a
-configurable band, default **−10…2 mm**) and that regulator's **pressure** as
-text (a dash `–` when the valve is off). Per-valve set boxes, APPLY ALL, STOP,
-? STATUS, and TIME ramping are unchanged.
+configurable band, default **−10…2 mm**) and that regulator's **pressure in
+kPa** as text (a dash `–` when the valve is off). Per-valve set boxes, APPLY
+ALL, STOP, ? STATUS, and TIME ramping are unchanged.
+
+**Units** — setpoints are entered in **kPa** (max 140 kPa, i.e. 4000 mV; decimals
+allowed). The Giga sketch stays in its VOLTAGE (mV) mode: `valve_controller.py`
+converts with `mV = (kPa + 100) × 1000 / 60` right before sending, so the
+firmware, touchscreen and the desktop `vc2_*.py` scripts are untouched.
 
 **Sensor mapping** — `sensor_mapping.json` ties each regulator (valve id 0–31)
 to the sensor (RS-485 slave id) measuring its muscle. Edit it to match wiring;

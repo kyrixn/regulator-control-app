@@ -9,8 +9,9 @@ Both muscles are stepped between the same two setpoints, in phase and in one
 batched serial command so they move together — no ramping, the setpoints are
 simply rewritten at each half-period:
 
-    low = 1800 mV        high = 2300 mV
-    2 Hz  ->  0.25 s at each setpoint, 8 full cycles in 4 s
+    low = 14 kPa        high = 32 kPa
+    (setpoints in kPa; ValveController converts to the mV the Giga takes)
+    5 Hz  ->  0.1 s at each setpoint, 20 full cycles in 4 s
 
 FDS, ECU, ECR and PT are commanded off for the whole run, so this measures the
 two flexors against the passive structure rather than against extensor
@@ -99,11 +100,17 @@ from fcu_fcr_cycle_test import (
 
 # ---- Test definition ------------------------------------------------------
 
+def mv_to_kpa(mV):
+    """Giga echo (mV) -> commanded kPa. Mirrors valve_controller.mv_to_kpa, kept
+    local so --plot works on a machine without pyserial."""
+    return mV * 0.06 - 100.0
+
+
 MOVING = ("FCU", "FCR")                 # stepped together, in phase
 VENTED = ("FDS", "ECU", "ECR", "PT")    # commanded off throughout
 
-LOW_MV = 1900
-HIGH_MV = 2200
+LOW_KPA = 14
+HIGH_KPA = 32
 FREQ_HZ = 5                # full cycles per second
 DURATION_S = 4.0                # length of the square-wave burst
 SETTLE_S = 2.0                  # dwell at low before zeroing
@@ -111,8 +118,8 @@ TAIL_S = 0.5                    # extra recording at low after the burst
 SAMPLE_HZ = 200.0               # sampler clock; the bus is the real limit
 
 CSV_COLUMNS = [
-    "wall_time", "elapsed_s", "cycle", "segment", "target_mV",
-    "cmd_FCU_mV", "cmd_FCR_mV", "len_FCU_mm", "len_FCR_mm",
+    "wall_time", "elapsed_s", "cycle", "segment", "target_kPa",
+    "cmd_FCU_kPa", "cmd_FCR_kPa", "len_FCU_mm", "len_FCR_mm",
     "abs_FCU_counts", "abs_FCR_counts", "fresh_FCU", "fresh_FCR",
     "online_FCU", "online_FCR",
 ]
@@ -120,7 +127,7 @@ CSV_COLUMNS = [
 I_T = CSV_COLUMNS.index("elapsed_s")
 I_CYCLE = CSV_COLUMNS.index("cycle")
 I_SEGMENT = CSV_COLUMNS.index("segment")
-I_TARGET = CSV_COLUMNS.index("target_mV")
+I_TARGET = CSV_COLUMNS.index("target_kPa")
 I_LEN_FCU = CSV_COLUMNS.index("len_FCU_mm")
 I_LEN_FCR = CSV_COLUMNS.index("len_FCR_mm")
 
@@ -144,7 +151,7 @@ class Recorder:
         self._stop = threading.Event()
         self._thread = None
         self._ctx_lock = threading.Lock()
-        self._ctx = {"cycle": 0, "segment": "settle", "target": LOW_MV}
+        self._ctx = {"cycle": 0, "segment": "settle", "target": LOW_KPA}
         self._last = {}
         self.t0 = None
 
@@ -171,7 +178,9 @@ class Recorder:
             with self._ctx_lock:
                 c = dict(self._ctx)
             with self.valve.display_lock:
-                data = dict(self.valve.valve_data)
+                data = dict(self.valve.valve_data)      # Giga echo, in mV
+            cmd = {r: (None if data.get(r) is None else round(mv_to_kpa(data[r]), 2))
+                   for r in (self.reg_fcu, self.reg_fcr)}
             by = {e["slave"]: e for e in
                   self.encoder.get_state().get("encoders", [])}
             l_u, a_u, f_u, on_u = self._read(by, self.sen_fcu)
@@ -179,7 +188,7 @@ class Recorder:
             self.rows.append([
                 round(time.time(), 3), round(start - self.t0, 4),
                 c["cycle"], c["segment"], c["target"],
-                data.get(self.reg_fcu), data.get(self.reg_fcr),
+                cmd[self.reg_fcu], cmd[self.reg_fcr],
                 l_u, l_r, a_u, a_r, f_u, f_r, on_u, on_r,
             ])
             rest = self.period - (time.perf_counter() - start)
@@ -236,10 +245,10 @@ class LivePlot:
 
             self.cmd, = self.ax_p.step([], [], where="post", color="#333",
                                        lw=1.2, label="target (both)")
-            for mv in (self.low, self.high):
-                self.ax_p.axhline(mv, color="0.75", lw=0.7)
-            self.ax_p.set_ylim(self.low - 60, self.high + 60)
-            self.ax_p.set_ylabel("setpoint (mV)")
+            for kpa in (self.low, self.high):
+                self.ax_p.axhline(kpa, color="0.75", lw=0.7)
+            self.ax_p.set_ylim(self.low - 4, self.high + 4)
+            self.ax_p.set_ylabel("setpoint (kPa)")
             self.ax_p.set_xlabel("time since zero (s)")
             self.ax_p.legend(loc="upper right", fontsize=8)
             self.ax_p.grid(alpha=0.3)
@@ -330,7 +339,7 @@ def describe_plan(args):
     half = 0.5 / args.freq
     return "\n".join([
         f"Driven muscles   : {' + '.join(MOVING)} — stepped together, in phase",
-        f"Setpoints        : low {args.low} mV  <->  high {args.high} mV",
+        f"Setpoints        : low {args.low:g} kPa  <->  high {args.high:g} kPa",
         f"Square wave      : {args.freq:g} Hz  ({half * 1000:.0f} ms at each "
         f"setpoint), {args.duration:g}s = {args.freq * args.duration:g} cycles",
         f"Vented throughout: {', '.join(VENTED)}",
@@ -455,10 +464,10 @@ def run(args):
               f"({n_steps} steps of {half * 1000:.0f} ms)...")
         t0 = time.perf_counter()
         for k in range(n_steps):
-            mv = args.high if k % 2 == 0 else args.low
-            rec.set_context(k // 2 + 1, "high" if k % 2 == 0 else "low", mv)
+            kpa = args.high if k % 2 == 0 else args.low
+            rec.set_context(k // 2 + 1, "high" if k % 2 == 0 else "low", kpa)
             # One batched command, so both muscles step on the same write.
-            valve.set_multiple_valves([(r, mv) for r in regs], ramp=0.0)
+            valve.set_multiple_valves([(r, kpa) for r in regs], ramp=0.0)
             # Absolute deadline, so per-step overhead cannot accumulate drift.
             sleep_or_abort(max(0.0, t0 + (k + 1) * half - time.perf_counter()))
 
@@ -537,7 +546,8 @@ def _read_csv(path):
         "segment": [r["segment"] for r in rows],
         "fcu": col("len_FCU_mm"),
         "fcr": col("len_FCR_mm"),
-        "target": col("target_mV"),
+        "target": (col("target_kPa") if "target_kPa" in rows[0]
+                   else np.array([mv_to_kpa(v) for v in col("target_mV")])),
         "fresh_fcu": [r.get("fresh_FCU", "") == "True" for r in rows],
         "fresh_fcr": [r.get("fresh_FCR", "") == "True" for r in rows],
     }
@@ -577,7 +587,7 @@ def plot_csv(path, show=False):
 
     # -- commanded setpoint (shared by both muscles) ------------------------
     ax_p.step(t, d["target"], where="post", color="0.25", lw=1.2, label="target")
-    ax_p.set_ylabel("setpoint (mV)")
+    ax_p.set_ylabel("setpoint (kPa)")
     ax_p.set_xlabel("time since zero (s)")
     ax_p.legend(loc="best", fontsize=8)
     ax_p.grid(alpha=0.3)
@@ -657,8 +667,8 @@ def build_parser():
         description="FCU+FCR square-wave step response (other four vented)")
     p.add_argument("--valve-port", default=None, help="Giga R1 regulator port")
     p.add_argument("--rs485-port", default=None, help="USB-RS-485 adapter port")
-    p.add_argument("--low", type=int, default=LOW_MV, help="low setpoint (mV)")
-    p.add_argument("--high", type=int, default=HIGH_MV, help="high setpoint (mV)")
+    p.add_argument("--low", type=float, default=LOW_KPA, help="low setpoint (kPa)")
+    p.add_argument("--high", type=float, default=HIGH_KPA, help="high setpoint (kPa)")
     p.add_argument("--freq", type=float, default=FREQ_HZ,
                    help="square-wave frequency in Hz (default 2)")
     p.add_argument("--duration", type=float, default=DURATION_S,

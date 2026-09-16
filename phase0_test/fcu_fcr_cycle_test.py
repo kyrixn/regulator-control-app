@@ -9,15 +9,16 @@ Only FCU (sensor 58) and FCR (sensor 59) carry a physically attached draw-wire
 sensor; the sensors listed for PT/ECU/ECR/FDS in sensor_mapping.json are dummy
 entries and are neither polled nor plotted.
 
-Pressure schedule (setpoints in mV, as sent to the Giga R1)
-----------------------------------------------------------
+Pressure schedule (setpoints in kPa; ValveController converts to the mV the
+Giga R1 takes, 1 kPa = 16.67 mV)
+----------------------------------------------------------------------------
 Held constant through every phase:
-    FDS = 1900    ECU = 1950    ECR = 1950    PT = 1900
+    FDS = 17    ECU = 14    ECR = 14    PT = 20
 
 FCU and FCR move together:
-    phase 1  "init"   2000 / 2000     ramp in over 1 s, then hold 2 s
-    phase 2  "up"     2300 / 2300
-    phase 3  "down"   1900 / 1900
+    phase 1  "init"   26 / 26     ramp in over 1 s, then hold 2 s
+    phase 2  "up"     38 / 38
+    phase 3  "down"   14 / 14
 
 Timeline
 --------
@@ -108,15 +109,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ---- Test definition ------------------------------------------------------
 
-# Muscles held at a fixed setpoint for the whole run.
-FIXED = {"FDS": 1950, "ECU": 1900, "ECR": 1900, "PT": 2000}
+def mv_to_kpa(mV):
+    """Giga echo (mV) -> commanded kPa. Mirrors valve_controller.mv_to_kpa, kept
+    local so --plot works on a machine without pyserial."""
+    return mV * 0.06 - 100.0
+
+
+# Muscles held at a fixed setpoint (kPa) for the whole run.
+FIXED = {"FDS": 17, "ECU": 14, "ECR": 14, "PT": 20}
 
 # The two muscles under test; both are commanded to the same value each phase.
 MOVING = ("FCU", "FCR")
 
-PHASE1_MV = 2100        # init
-PHASE2_MV = 2300      # up
-PHASE3_MV = 1900        # down
+PHASE1_KPA = 26         # init
+PHASE2_KPA = 38         # up
+PHASE3_KPA = 14         # down
 
 INIT_RAMP_S = 1.0       # gentle ramp from vented up to the phase 1 setpoints
 PHASE1_HOLD_S = 2.0     # dwell at phase 1 before zeroing
@@ -138,7 +145,7 @@ RUNTIME_MARGIN_S = 30.0 # slack over the planned duration before the watchdog fi
 
 CSV_COLUMNS = [
     "wall_time", "elapsed_s", "cycle", "segment",
-    "target_FCU", "target_FCR", "cmd_FCU_mV", "cmd_FCR_mV",
+    "target_FCU", "target_FCR", "cmd_FCU_kPa", "cmd_FCR_kPa",
     "len_FCU_mm", "len_FCR_mm", "abs_FCU_counts", "abs_FCR_counts",
     "online_FCU", "online_FCR",
     "fix_FDS", "fix_ECU", "fix_ECR", "fix_PT",
@@ -152,8 +159,8 @@ I_CYCLE = CSV_COLUMNS.index("cycle")
 I_SEGMENT = CSV_COLUMNS.index("segment")
 I_LEN_FCU = CSV_COLUMNS.index("len_FCU_mm")
 I_LEN_FCR = CSV_COLUMNS.index("len_FCR_mm")
-I_CMD_FCU = CSV_COLUMNS.index("cmd_FCU_mV")
-I_CMD_FCR = CSV_COLUMNS.index("cmd_FCR_mV")
+I_CMD_FCU = CSV_COLUMNS.index("cmd_FCU_kPa")
+I_CMD_FCR = CSV_COLUMNS.index("cmd_FCR_kPa")
 
 
 # ---- Serial port detection (mirrors app.py, kept standalone) --------------
@@ -400,7 +407,7 @@ class Recorder:
         self._thread = None
         self._ctx_lock = threading.Lock()
         self._ctx = {"cycle": 0, "segment": "start",
-                     "t_fcu": PHASE1_MV, "t_fcr": PHASE1_MV}
+                     "t_fcu": PHASE1_KPA, "t_fcr": PHASE1_KPA}
         self.t0 = None
 
     def set_context(self, cycle, segment, t_fcu, t_fcr):
@@ -409,9 +416,14 @@ class Recorder:
                          "t_fcu": t_fcu, "t_fcr": t_fcr}
 
     def _cmd(self):
+        """Last commanded pressure (kPa) of FCU and FCR; None while off."""
         with self.valve.display_lock:
-            data = dict(self.valve.valve_data)
-        return data.get(self.reg_fcu), data.get(self.reg_fcr)
+            data = dict(self.valve.valve_data)      # echoed by the Giga, in mV
+
+        def kpa(reg):
+            mV = data.get(reg)
+            return None if mV is None else round(mv_to_kpa(mV), 2)
+        return kpa(self.reg_fcu), kpa(self.reg_fcr)
 
     def _length(self, entry, slave):
         """(length_mm, abs_counts, online) for one sensor, full precision."""
@@ -496,12 +508,12 @@ class LivePlot:
                                          label="FCU cmd")
             self.p_fcr, = self.ax_p.plot([], [], color="#d62728", lw=1.2,
                                          ls="--", label="FCR cmd")
-            for mv, lbl in ((PHASE2_MV, "p2 up"), (PHASE3_MV, "p3 down")):
-                self.ax_p.axhline(mv, color="0.75", lw=0.7)
-                self.ax_p.text(self.recorded_s, mv, f" {lbl}", va="center",
+            for kpa, lbl in ((PHASE2_KPA, "p2 up"), (PHASE3_KPA, "p3 down")):
+                self.ax_p.axhline(kpa, color="0.75", lw=0.7)
+                self.ax_p.text(self.recorded_s, kpa, f" {lbl}", va="center",
                                fontsize=8, color="0.45")
-            self.ax_p.set_ylim(min(PHASE3_MV, PHASE1_MV) - 60, PHASE2_MV + 60)
-            self.ax_p.set_ylabel("setpoint (mV)")
+            self.ax_p.set_ylim(min(PHASE3_KPA, PHASE1_KPA) - 4, PHASE2_KPA + 4)
+            self.ax_p.set_ylabel("setpoint (kPa)")
             self.ax_p.set_xlabel("time since zero (s)")
             self.ax_p.legend(loc="upper right", fontsize=8)
             self.ax_p.grid(alpha=0.3)
@@ -616,9 +628,9 @@ def describe_plan(cycles):
     fixed = "  ".join(f"{n}={v}" for n, v in FIXED.items())
     recorded = RAMP_S + DWELL_S + cycles * 2 * (RAMP_S + DWELL_S)
     return "\n".join([
-        f"Fixed throughout : {fixed}",
-        f"FCU/FCR phases   : p1 init {PHASE1_MV}  ->  p2 up {PHASE2_MV}  "
-        f"->  p3 down {PHASE3_MV}",
+        f"Fixed throughout : {fixed}  (kPa)",
+        f"FCU/FCR phases   : p1 init {PHASE1_KPA}  ->  p2 up {PHASE2_KPA}  "
+        f"->  p3 down {PHASE3_KPA}  (kPa)",
         f"Ramp in          : {INIT_RAMP_S:g}s, then phase 1 hold "
         f"{PHASE1_HOLD_S:g}s, then ZERO sensors",
         f"Transitions      : {RAMP_S:g}s ramp, {DWELL_S:g}s dwell at each phase",
@@ -651,8 +663,8 @@ def run(args):
     print()
     print(f"FCU = regulator {reg_fcu}, sensor {sen_fcu}")
     print(f"FCR = regulator {reg_fcr}, sensor {sen_fcr}")
-    for name, mv in FIXED.items():
-        print(f"{name:<4}= regulator {muscles[name]['regulator']}, held at {mv}")
+    for name, kpa in FIXED.items():
+        print(f"{name:<4}= regulator {muscles[name]['regulator']}, held at {kpa} kPa")
 
     if args.dry_run:
         print("\n[dry-run] no hardware touched.")
@@ -714,9 +726,9 @@ def run(args):
 
         # --- Phase 1: ramp every muscle in, hold, then zero. ---------------
         print(f"Phase 1: ramping in over {INIT_RAMP_S:g}s "
-              f"(FCU/FCR {PHASE1_MV}, others fixed)...")
-        init = [(reg_fcu, PHASE1_MV), (reg_fcr, PHASE1_MV)]
-        init += [(muscles[n]["regulator"], mv) for n, mv in FIXED.items()]
+              f"(FCU/FCR {PHASE1_KPA}, others fixed)...")
+        init = [(reg_fcu, PHASE1_KPA), (reg_fcr, PHASE1_KPA)]
+        init += [(muscles[n]["regulator"], kpa) for n, kpa in FIXED.items()]
         valve.set_multiple_valves(init, ramp=INIT_RAMP_S)
         sleep_or_abort(INIT_RAMP_S)
         print(f"Phase 1: holding {PHASE1_HOLD_S:g}s...")
@@ -741,26 +753,26 @@ def run(args):
                 print(f"Live view open ({args.live_fps:g} fps). "
                       "Closing the window does not stop the run — use Ctrl-C.")
 
-        def go(cycle, segment, mv):
-            """Ramp FCU/FCR to mv over RAMP_S, then dwell DWELL_S.
+        def go(cycle, segment, kpa):
+            """Ramp FCU/FCR to kpa over RAMP_S, then dwell DWELL_S.
 
             Both waits are abort-aware, so an e-stop unwinds here instead of
             letting the sequence command the next setpoint.
             """
-            rec.set_context(cycle, f"{segment}_ramp", mv, mv)
-            valve.set_multiple_valves([(reg_fcu, mv), (reg_fcr, mv)], ramp=RAMP_S)
+            rec.set_context(cycle, f"{segment}_ramp", kpa, kpa)
+            valve.set_multiple_valves([(reg_fcu, kpa), (reg_fcr, kpa)], ramp=RAMP_S)
             sleep_or_abort(RAMP_S)
-            rec.set_context(cycle, f"{segment}_dwell", mv, mv)
+            rec.set_context(cycle, f"{segment}_dwell", kpa, kpa)
             sleep_or_abort(DWELL_S)
 
         # --- Phase 1 -> phase 2 (approach, not counted as a cycle). --------
-        print(f"Phase 1 -> 2: {PHASE1_MV} -> {PHASE2_MV} over {RAMP_S:g}s")
-        go(0, "p1_to_p2", PHASE2_MV)
+        print(f"Phase 1 -> 2: {PHASE1_KPA} -> {PHASE2_KPA} over {RAMP_S:g}s")
+        go(0, "p1_to_p2", PHASE2_KPA)
 
         # --- 4 x (phase 2 -> phase 3 -> phase 2). --------------------------
         for cycle in range(1, args.cycles + 1):
-            go(cycle, "p2_to_p3", PHASE3_MV)
-            go(cycle, "p3_to_p2", PHASE2_MV)
+            go(cycle, "p2_to_p3", PHASE3_KPA)
+            go(cycle, "p3_to_p2", PHASE2_KPA)
             print(f"  cycle {cycle}/{args.cycles} done ({len(rec.rows)} samples)")
 
     except Aborted as exc:
@@ -833,14 +845,20 @@ def _read_csv(path):
                 out.append(np.nan if cast is float else v)
         return np.array(out) if cast is float else out
 
+    def cmd_col(name_kpa, name_mv):
+        """Commanded pressure in kPa; CSVs from before the kPa switch hold mV."""
+        if name_kpa in rows[0]:
+            return col(name_kpa)
+        return np.array([mv_to_kpa(v) for v in col(name_mv)])
+
     return {
         "t": col("elapsed_s"),
         "cycle": np.array([int(float(r["cycle"])) for r in rows]),
         "segment": [r["segment"] for r in rows],
         "fcu": col("len_FCU_mm"),
         "fcr": col("len_FCR_mm"),
-        "cmd_fcu": col("cmd_FCU_mV"),
-        "cmd_fcr": col("cmd_FCR_mV"),
+        "cmd_fcu": cmd_col("cmd_FCU_kPa", "cmd_FCU_mV"),
+        "cmd_fcr": cmd_col("cmd_FCR_kPa", "cmd_FCR_mV"),
         "tgt_fcu": col("target_FCU"),
     }
 
@@ -892,10 +910,10 @@ def plot_csv(path, show=False):
     ax_p.plot(t, d["cmd_fcu"], color=C_FCU, lw=1.2, label="FCU cmd")
     ax_p.plot(t, d["cmd_fcr"], color=C_FCR, lw=1.2, ls="--", label="FCR cmd")
     ax_p.plot(t, d["tgt_fcu"], color="0.4", lw=0.9, ls=":", label="target")
-    for mv, lbl in ((PHASE2_MV, "p2 up"), (PHASE3_MV, "p3 down")):
-        ax_p.axhline(mv, color="0.7", lw=0.7)
-        ax_p.text(t[-1], mv, f" {lbl}", va="center", fontsize=8, color="0.45")
-    ax_p.set_ylabel("setpoint (mV)")
+    for kpa, lbl in ((PHASE2_KPA, "p2 up"), (PHASE3_KPA, "p3 down")):
+        ax_p.axhline(kpa, color="0.7", lw=0.7)
+        ax_p.text(t[-1], kpa, f" {lbl}", va="center", fontsize=8, color="0.45")
+    ax_p.set_ylabel("setpoint (kPa)")
     ax_p.set_xlabel("time since zero (s)")
     ax_p.legend(loc="best", fontsize=8, ncol=3)
     ax_p.grid(alpha=0.3)
