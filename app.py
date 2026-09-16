@@ -7,6 +7,8 @@ serial devices of the station over two separate USB ports:
 
   - Arduino Giga R1 (valve regulator) — valve control, via ValveController
     (vc2/vc2.ino protocol). Enumerates as e.g. /dev/ttyACM0 "Arduino Giga".
+    Setpoints are entered in kPa; ValveController converts to the mV the
+    sketch expects.
   - EKU081 8-port USB↔RS-485 adapter (GJW encoders) — position/turns/speed
     readout, via EncoderController (Modbus RTU). Its WCH CH9344 driver creates
     one node per port: /dev/ttyCH9344USB0 … USB7. The encoder bus defaults to
@@ -31,7 +33,7 @@ import serial.tools.list_ports
 from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO
 
-from valve_controller import ValveController, MAX_INPUT_VALUE, NUM_VALVES
+from valve_controller import ValveController, MAX_INPUT_KPA, NUM_VALVES
 from encoder_controller import (
     DEFAULT_COUNTS_PER_TURN,
     DEFAULT_DRUM_DIAMETER_MM,
@@ -253,7 +255,7 @@ def _parse_ramp(data):
 
 @socketio.on('set_valve')
 def on_set_valve(data):
-    """data = {valve: int, value: int | 'off', ramp: float}"""
+    """data = {valve: int, value: kPa (number) | 'off', ramp: float}"""
     if valve_controller is None:
         return
     valve = int(data.get('valve'))
@@ -263,14 +265,14 @@ def on_set_valve(data):
         valve_controller.valve_off(valve, ramp=ramp)
         return
     try:
-        valve_controller.set_valve(valve, int(value), ramp=ramp)
+        valve_controller.set_valve(valve, float(value), ramp=ramp)
     except (ValueError, TypeError):
         valve_controller.message_queue.append(f"[ERR] V{valve}: invalid value '{value}'")
 
 
 @socketio.on('apply_all')
 def on_apply_all(data):
-    """data = {entries: [{valve:int, value:int|'off'}, ...], ramp: float}
+    """data = {entries: [{valve:int, value:kPa|'off'}, ...], ramp: float}
 
     Validates everything first; if anything is invalid the whole batch is
     aborted, mirroring vc2_gui.py's APPLY ALL behaviour.
@@ -287,11 +289,11 @@ def on_apply_all(data):
             pairs.append((valve, 'off'))
             continue
         try:
-            val = int(raw)
+            val = float(raw)
         except (ValueError, TypeError):
             invalid.append((valve, raw))
             continue
-        if val > MAX_INPUT_VALUE:
+        if val > MAX_INPUT_KPA:
             invalid.append((valve, raw))
             continue
         pairs.append((valve, val))

@@ -8,7 +8,7 @@
 let NUM_VALVES = 32;
 let ROW_SIZE = 8;
 let BUS_SPLIT = 16;           // valves below this are on Wire, at/above on Wire1
-let MAX_VALUE = 4000;         // valve setpoint limit, overwritten by server state
+let MAX_VALUE = 140;          // valve setpoint limit (kPa), overwritten by server state
 
 const socket = io();
 const valveEls = [];          // index -> { input, bar, label, cell, id, zeroBtn, sensor }
@@ -124,13 +124,13 @@ function submitSingle(valve, input) {
     input.value = '';
     return;
   }
-  const value = parseInt(t, 10);
+  const value = parseFloat(t);
   if (Number.isNaN(value)) {
     logLine(`[ERR] V${valve}: invalid value '${input.value}'`);
     return;
   }
   if (value > MAX_VALUE) {
-    logLine(`[ERR] V${valve}: ${value} exceeds limit (max ${MAX_VALUE})`);
+    logLine(`[ERR] V${valve}: ${value} kPa exceeds limit (max ${MAX_VALUE} kPa)`);
     return;
   }
   socket.emit('set_valve', { valve, value, ramp });
@@ -151,7 +151,7 @@ function applyAll() {
       toClear.push(i);
       continue;
     }
-    const val = parseInt(t, 10);
+    const val = parseFloat(t);
     if (Number.isNaN(val) || val > MAX_VALUE) {
       invalid.push(`V${i}='${raw}'`);
       continue;
@@ -230,7 +230,7 @@ function renderValves(state) {
     // Pressure text (dash when the valve has no active setpoint).
     const v = valves[String(i)];
     if (v) {
-      el.press.textContent = `${v.bar.toFixed(2)} bar`;
+      el.press.textContent = `${v.kpa.toFixed(1)} kPa`;
       el.cell.classList.add('on');
     } else {
       el.press.textContent = '–';

@@ -7,12 +7,19 @@ for use in the web app. The matplotlib display has been removed; this module
 only owns the serial connection, a background read thread, and the parsed
 valve state.
 
+Units: the public API (set_valve, set_multiple_valves, get_state) works in
+kPa of regulator output pressure. The Giga itself stays in VOLTAGE mode and
+takes mV on the wire; kpa_to_mv() converts at the serial boundary using the
+regulator's fixed transfer function (0-10 V -> -100..500 kPa). Keeping the
+firmware in mV means the touchscreen, the desktop scripts and older branches
+all keep working against the same sketch.
+
 Hardware target: Arduino Giga R1 running vc2/vc2.ino.
   16 GP8403 DACs (8 per I2C bus, 2 channels each = 32 valves):
   - Valves  0..15  on Wire   (SDA/SCL)
   - Valves 16..31  on Wire1  (SDA1/SCL1)
 
-Arduino command set (Serial @ 115200):
+Arduino command set (Serial @ 115200, values in mV):
   valve,value          Set single valve: 0,3000 or 20,2100
   v1,val1,v2,val2,...  Set multiple valves: 0,3000,20,2500
   valve,off            Turn off a valve: 20,off
@@ -35,18 +42,34 @@ from encoder_controller import is_ch9344_port
 NUM_VALVES = 32
 ROW_SIZE = 8
 BUS_SPLIT = 16          # valves 0..15 -> Wire, 16..31 -> Wire1
-MAX_INPUT_VALUE = 4000  # mV or kPa — never send values above this
 RAMP_STEP = 0.04        # seconds between setpoints while ramping (~25 Hz)
+
+# Regulator transfer function: the DAC's 0-10 V output commands -100..500 kPa,
+# i.e. kPa = mV * 0.06 - 100. Setpoints are entered in kPa and converted to mV
+# right before they go out over serial.
+KPA_MIN = -100.0
+KPA_MAX = 500.0
+MV_FULL_SCALE = 10000
+MV_PER_KPA = MV_FULL_SCALE / (KPA_MAX - KPA_MIN)   # 16.67 mV per kPa
+
+# Safety cap on commanded pressure. 140 kPa == 4000 mV, the previous mV limit.
+MAX_INPUT_KPA = 140.0
+
+
+def kpa_to_mv(kpa):
+    """Commanded kPa -> DAC mV, rounded and clamped to the DAC's 0..10000 mV."""
+    mV = int(round((float(kpa) - KPA_MIN) * MV_PER_KPA))
+    return max(0, min(MV_FULL_SCALE, mV))
+
+
+def mv_to_kpa(mV):
+    """DAC mV (as echoed by the Giga) -> commanded output pressure in kPa."""
+    return mV / MV_PER_KPA + KPA_MIN
 
 
 def mv_to_bar(mV):
-    """Convert commanded mV to output pressure in bar.
-
-    Device maps 0-10 V to -100..500 kPa, i.e. kPa = (mV/1000)*60 - 100.
-    Then bar = kPa / 100. Clamped to >= 0 (no vacuum hardware).
-    """
-    bar = ((mV / 1000.0) * 60.0 - 100.0) / 100.0
-    return max(0.0, bar)
+    """DAC mV -> output pressure in bar, clamped to >= 0 (no vacuum hardware)."""
+    return max(0.0, mv_to_kpa(mV) / 100.0)
 
 
 class ValveController:
@@ -59,7 +82,8 @@ class ValveController:
         self.read_thread = None
         self.port_name = None
 
-        # Valve readings (commanded mV): {valve_id: mV}
+        # Valve readings as echoed by the Giga, in mV: {valve_id: mV}.
+        # Converted to kPa in get_state().
         self.valve_data = {}
 
         # Protects valve_data against concurrent access.
@@ -248,7 +272,11 @@ class ValveController:
             return self.valve_data.get(valve, 0)
 
     def _start_ramp(self, valve, target, off, duration):
-        """Begin (or restart) a linear ramp on a valve over `duration` seconds."""
+        """Begin (or restart) a linear ramp on a valve over `duration` seconds.
+
+        `target` is in mV; the kPa->mV map is linear, so ramping in mV is the
+        same as ramping in kPa.
+        """
         now = time.time()
         with self.ramp_lock:
             self.ramps[valve] = {
@@ -305,53 +333,59 @@ class ValveController:
     # Control commands
     # ------------------------------------------------------------------
 
-    def _value_within_limit(self, value):
-        """Return True if value is allowed to be sent to the hardware."""
-        if value > MAX_INPUT_VALUE:
+    def _value_within_limit(self, kpa):
+        """Return True if a kPa setpoint is allowed to be sent to the hardware."""
+        if kpa > MAX_INPUT_KPA:
             self.message_queue.append(
-                f"[ERR] Value {value} exceeds limit (max {MAX_INPUT_VALUE})"
+                f"[ERR] Value {kpa:g} kPa exceeds limit (max {MAX_INPUT_KPA:g} kPa)"
             )
             return False
         return True
 
-    def set_valve(self, valve, value, ramp=0.0):
-        """Set a single valve to value (mV or kPa depending on Arduino mode).
+    def set_valve(self, valve, kpa, ramp=0.0):
+        """Set a single valve to `kpa` (output pressure, -100..140 kPa).
 
-        If ramp > 0, linearly ramp from the current value to `value` over
+        If ramp > 0, linearly ramp from the current value to `kpa` over
         that many seconds instead of jumping immediately.
         """
-        if not self._value_within_limit(value):
+        kpa = float(kpa)
+        if not self._value_within_limit(kpa):
             return False
+        mV = kpa_to_mv(kpa)
         if ramp and ramp > 0:
-            self._start_ramp(valve, int(value), off=False, duration=ramp)
+            self._start_ramp(valve, mV, off=False, duration=ramp)
             return True
         self._cancel_ramp(valve)
-        return self.send(f"{valve},{value}")
+        return self.send(f"{valve},{mV}")
 
     def set_multiple_valves(self, valve_value_pairs, ramp=0.0):
         """Set multiple valves in one batched command.
 
-        valve_value_pairs: list of (valve, value) where value is an int
-        (mV / kPa) or the string 'off'.
+        valve_value_pairs: list of (valve, value) where value is a pressure
+        in kPa or the string 'off'.
 
         If ramp > 0, every valve in the batch linearly ramps from its current
         value to its target over that many seconds, simultaneously.
         """
-        for _, val in valve_value_pairs:
+        pairs = []          # (valve, mV-or-'off')
+        for v, val in valve_value_pairs:
             if val == 'off':
+                pairs.append((v, 'off'))
                 continue
-            if not self._value_within_limit(val):
+            kpa = float(val)
+            if not self._value_within_limit(kpa):
                 return False
+            pairs.append((v, kpa_to_mv(kpa)))
         if ramp and ramp > 0:
-            for v, val in valve_value_pairs:
-                if val == 'off':
+            for v, mV in pairs:
+                if mV == 'off':
                     self._start_ramp(v, 0, off=True, duration=ramp)
                 else:
-                    self._start_ramp(v, int(val), off=False, duration=ramp)
+                    self._start_ramp(v, mV, off=False, duration=ramp)
             return True
-        for v, _ in valve_value_pairs:
+        for v, _ in pairs:
             self._cancel_ramp(v)
-        cmd = ",".join(f"{v},{val}" for v, val in valve_value_pairs)
+        cmd = ",".join(f"{v},{mV}" for v, mV in pairs)
         return self.send(cmd)
 
     def valve_off(self, valve, ramp=0.0):
@@ -387,7 +421,8 @@ class ValveController:
         """Snapshot of valve state for serialization to the browser."""
         with self.display_lock:
             valves = {
-                str(v): {"mV": mV, "bar": round(mv_to_bar(mV), 3)}
+                str(v): {"kpa": round(mv_to_kpa(mV), 2), "mV": mV,
+                         "bar": round(mv_to_bar(mV), 3)}
                 for v, mV in self.valve_data.items()
             }
         return {
@@ -396,7 +431,9 @@ class ValveController:
             "num_valves": NUM_VALVES,
             "row_size": ROW_SIZE,
             "bus_split": BUS_SPLIT,
-            "max_value": MAX_INPUT_VALUE,
+            "unit": "kPa",
+            "min_value": KPA_MIN,
+            "max_value": MAX_INPUT_KPA,
             "valves": valves,
             "active": len(valves),
         }
