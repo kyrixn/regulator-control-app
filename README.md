@@ -78,7 +78,7 @@ Then open <http://localhost:5000>.
 | `--valve-port`      | auto      | Giga R1 regulator port                          |
 | `--rs485-port`      | auto      | USB↔RS-485 adapter port                         |
 | `--no-valves`       | off       | Don't open the valve regulator                  |
-| `--no-encoders`     | off       | Don't open the RS-485 encoder bus               |
+| `--no-encoders`, `--ne` | off   | Don't open the RS-485 encoder bus               |
 | `--ids`             | `50-80`   | Encoder slave ids (ranges + lists: `50-80,90`)  |
 | `--baud`            | `115200`  | RS-485 baud rate                                |
 | `--parity`          | `N`       | RS-485 parity (`N`/`E`/`O`)                      |

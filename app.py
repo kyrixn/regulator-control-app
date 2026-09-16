@@ -368,7 +368,7 @@ def main():
                         help='Serial port of the USB↔RS-485 adapter (e.g. /dev/ttyACM1)')
     parser.add_argument('--no-valves', action='store_true',
                         help='Do not open the valve regulator')
-    parser.add_argument('--no-encoders', action='store_true',
+    parser.add_argument('--no-encoders', '--ne', action='store_true',
                         help='Do not open the RS-485 encoder bus')
     # Encoder / Modbus options
     parser.add_argument('--ids', type=parse_slave_ids, default=parse_slave_ids("50-80"),
