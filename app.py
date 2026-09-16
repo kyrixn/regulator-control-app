@@ -395,7 +395,7 @@ def main():
     parser.add_argument('--no-encoders', action='store_true',
                         help='Do not open the RS-485 encoder bus')
     # Encoder / Modbus options
-    parser.add_argument('--ids', type=parse_slave_ids, default=parse_slave_ids("50-80"),
+    parser.add_argument('--ids', type=parse_slave_ids, default=parse_slave_ids("1,50-80"),
                         help='Encoder slave ids to scan, e.g. 50-80 or 1,2,10')
     parser.add_argument('--baud', type=int, default=115200, help='RS-485 baud rate')
     parser.add_argument('--parity', default='N', choices=['N', 'E', 'O'],

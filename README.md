@@ -54,7 +54,7 @@ empty bar.
 
 **Encoders (RS-485)** — a draw-wire setup: the encoder magnet rides a drum
 (Ø **14 mm** by default) with a thread wound on it, so one turn pays out one
-circumference of thread. The app scans slave ids (default **50–80**) for GJW
+circumference of thread. The app scans slave ids (default **1, 50–80**) for GJW
 encoders and live-polls the ones that answer:
 
 ```
@@ -91,7 +91,7 @@ Then open <http://localhost:5000>.
 | `--rs485-port`      | auto      | EKU081 port (auto = lowest `ttyCH9344USB*`)     |
 | `--no-valves`       | off       | Don't open the valve regulator                  |
 | `--no-encoders`     | off       | Don't open the RS-485 encoder bus               |
-| `--ids`             | `50-80`   | Encoder slave ids (ranges + lists: `50-80,90`)  |
+| `--ids`             | `1,50-80` | Encoder slave ids (ranges + lists: `50-80,90`)  |
 | `--baud`            | `115200`  | RS-485 baud rate                                |
 | `--parity`          | `N`       | RS-485 parity (`N`/`E`/`O`)                      |
 | `--counts-per-turn` | `2097152` | Encoder single-turn resolution                  |
