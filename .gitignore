@@ -17,3 +17,4 @@ phase0_data/
 
 # Finger acquisition / trial logs
 runs/
+*.local.json

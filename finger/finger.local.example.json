@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "ports": {
+    "valve": "/dev/serial/by-id/usb-Arduino_Giga_0043003D3033511833323537-if00",
+    "rs485": "/dev/ttyCH9344USB0"
+  },
+  "encoder": {
+    "baud": 115200,
+    "counts_per_turn": 2097152,
+    "drum_diameter_mm": 14.0
+  },
+  "muscles": {
+    "ED":  { "regulator": 18, "sensor": 63, "ceiling_kpa": 80,  "sign": null, "reference_counts": null },
+    "FDS": { "regulator": 17, "sensor": 1,  "ceiling_kpa": 80,  "sign": null, "reference_counts": null },
+    "FDP": { "regulator": 16, "sensor": 65, "ceiling_kpa": 80,  "sign": null, "reference_counts": null },
+    "DI":  { "regulator": 19, "sensor": 54, "ceiling_kpa": 125, "sign": null, "reference_counts": null },
+    "PI":  { "regulator": 20, "sensor": 69, "ceiling_kpa": 125, "sign": null, "reference_counts": null }
+  }
+}
