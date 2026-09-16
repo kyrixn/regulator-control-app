@@ -496,7 +496,7 @@ def main():
                              '(e.g. /dev/ttyCH9344USB0)')
     parser.add_argument('--no-valves', action='store_true',
                         help='Do not open the valve regulator')
-    parser.add_argument('--no-encoders', action='store_true',
+    parser.add_argument('--no-encoders', '--ne', action='store_true',
                         help='Do not open the RS-485 encoder bus')
     # Encoder / Modbus options
     parser.add_argument('--ids', type=parse_slave_ids, default=parse_slave_ids("1,50-80"),
