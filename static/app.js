@@ -1,14 +1,14 @@
 // Front-end for the vc2 pneumatic station web app (len_control branch).
 // Each of the 16 valve cells shows its muscle's LENGTH (mm, from the mapped
 // sensor) as a bar and the regulator's PRESSURE as text. Each cell has two
-// inputs: a PRESSURE box (mV) and a target-LENGTH box (mm) that runs a PID
+// inputs: a PRESSURE box (kPa) and a target-LENGTH box (mm) that runs a PID
 // (keyed by sensor id). Global HOLD stops all PID loops and holds pressure.
 
 const NUM_VALVES = 16;
-let MAX_VALUE = 4000;         // valve setpoint limit, overwritten by server state
+let MAX_VALUE = 140;          // valve setpoint limit (kPa), overwritten by server state
 
 const socket = io();
-const valveEls = [];          // index -> { input, lenInput, bar, press, len, cell, id, sensor, maxmv }
+const valveEls = [];          // index -> { input, lenInput, bar, press, len, cell, id, sensor, maxkpa }
 
 // ------------------------------------------------------------------
 // Build the two rows of 8 valves
@@ -43,8 +43,8 @@ function buildValves() {
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'press-input';
-      input.placeholder = 'mV';
-      input.title = 'Set pressure (mV)';
+      input.placeholder = 'kPa';
+      input.title = 'Set pressure (kPa)';
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') submitSingle(i, input);
       });
@@ -65,7 +65,7 @@ function buildValves() {
       container.appendChild(cell);
 
       valveEls[i] = { input, lenInput, bar, label, press, len, cell, id,
-                      sensor: null, maxmv: MAX_VALUE };
+                      sensor: null, maxkpa: MAX_VALUE };
     }
   }
 }
@@ -90,14 +90,14 @@ function submitSingle(valve, input) {
     input.value = '';
     return;
   }
-  const value = parseInt(t, 10);
+  const value = parseFloat(t);
   if (Number.isNaN(value)) {
     logLine(`[ERR] V${valve}: invalid value '${input.value}'`);
     return;
   }
-  const mx = valveEls[valve].maxmv || MAX_VALUE;
+  const mx = valveEls[valve].maxkpa || MAX_VALUE;
   if (value > mx) {
-    logLine(`[ERR] V${valve}: ${value} exceeds limit (max ${mx})`);
+    logLine(`[ERR] V${valve}: ${value} kPa exceeds limit (max ${mx} kPa)`);
     return;
   }
   socket.emit('set_valve', { valve, value, ramp });
@@ -142,7 +142,7 @@ function applyAll() {
       toClear.push(i);
       continue;
     }
-    const val = parseInt(t, 10);
+    const val = parseFloat(t);
     if (Number.isNaN(val) || val > MAX_VALUE) {
       invalid.push(`V${i}='${raw}'`);
       continue;
@@ -234,7 +234,7 @@ function renderValves(state) {
     // Pressure text (dash when the valve has no active setpoint).
     const v = valves[String(i)];
     if (v) {
-      el.press.textContent = `${v.bar.toFixed(2)} bar`;
+      el.press.textContent = `${v.kpa.toFixed(1)} kPa`;
       el.cell.classList.add('on');
     } else {
       el.press.textContent = '–';
@@ -244,7 +244,7 @@ function renderValves(state) {
     // Length-control target box (keyed by the muscle's SENSOR id).
     const sensor = (m.sensor === undefined || m.sensor === null) ? null : m.sensor;
     el.sensor = sensor;
-    el.maxmv = m.max_mv || MAX_VALUE;
+    el.maxkpa = m.max_kpa || MAX_VALUE;
     const mapped = sensor !== null;
     el.lenInput.disabled = !mapped;
     if (!mapped) {
@@ -253,7 +253,7 @@ function renderValves(state) {
     } else if (m.controlled) {
       const tgt = Number(m.target_mm).toFixed(2);
       el.lenInput.placeholder = `${m.at_target ? '✓' : '▶'} ${tgt}`;
-      el.lenInput.title = `Length PID → ${tgt} mm (out ${m.output_mv} mV`
+      el.lenInput.title = `Length PID → ${tgt} mm (out ${m.output_kpa} kPa`
         + `${m.at_target ? ', on target' : ''}). Type a value to change, 'off' to release.`;
       el.cell.classList.add('len-ctrl');
       el.cell.classList.toggle('len-ok', !!m.at_target);

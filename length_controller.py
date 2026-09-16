@@ -10,11 +10,12 @@ keyed by sensor, and the current valve is looked up live from the mapping).
 
 Control law: a conservative PI (Kd available but 0 by default), tuned to remove
 steady-state error even if the response is slow — low response time is fine, a
-standing offset is not. The command is a regulator pressure in mV:
+standing offset is not. The command is a regulator pressure in kPa (the valve
+layer converts to the mV the Giga takes, 1 kPa = 16.67 mV):
 
     e   = sign * (target_mm - length_mm)      # sign encodes the plant direction
     I  += Ki * e * dt                          # integrator holds the steady output
-    out = clamp(Kp*e + I + Kd*de,  0 .. max_mv)
+    out = clamp(Kp*e + I + Kd*de,  min_kpa .. max_kpa)
     I  += (out - raw)                          # back-calculation anti-windup
 
 `sign = -1` means "more pressure shortens the muscle" (pressure up -> length
@@ -24,10 +25,11 @@ preloaded so `out` equals the muscle's current pressure — a bumpless takeover.
 Within `tolerance_mm` (default 0.1 mm) of the target the loop enters a deadband:
 it freezes the integrator and stops re-commanding, so it does not hunt for
 precision finer than the muscle's few-mm working range needs (this prevents a
-slow 1-mV limit cycle / valve chatter around the setpoint).
+slow limit cycle / valve chatter around the setpoint).
 
-Output is hard-clamped to `max_mv` (default 3000) so a mis-set gain or wrong
-sign can only drive to a safe rail, never past the muscle pressure limit.
+Output is hard-clamped to `max_kpa` (default 80 kPa, i.e. 3000 mV) so a
+mis-set gain or wrong sign can only drive to a safe rail, never past the
+muscle pressure limit. `min_kpa` defaults to -100 kPa (0 mV, fully vented).
 """
 
 from __future__ import annotations
@@ -37,14 +39,18 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
+from valve_controller import kpa_to_mv, mv_to_kpa
 
-DEFAULT_KP = 25.0      # mV per mm of error
-DEFAULT_KI = 10.0      # mV per (mm * second)
+
+# Gains were tuned in mV/mm (Kp 25, Ki 10); 1 mV = 0.06 kPa, so these are the
+# same loop expressed in kPa.
+DEFAULT_KP = 1.5       # kPa per mm of error
+DEFAULT_KI = 0.6       # kPa per (mm * second)
 DEFAULT_KD = 0.0       # off by default (draw-wire noise makes D touchy)
 DEFAULT_SIGN = -1      # pressure up -> length down
 DEFAULT_TOLERANCE_MM = 0.1  # deadband: within this of target, stop trimming
-MUSCLE_MAX_MV = 3000   # hard pressure ceiling for muscles
-MUSCLE_MIN_MV = 0
+MUSCLE_MAX_KPA = 80.0  # hard pressure ceiling for muscles (== 3000 mV)
+MUSCLE_MIN_KPA = -100.0  # fully vented (== 0 mV)
 DEFAULT_RATE_HZ = 20.0
 
 
@@ -73,8 +79,8 @@ class LengthController:
         kd: float = DEFAULT_KD,
         sign: int = DEFAULT_SIGN,
         tolerance_mm: float = DEFAULT_TOLERANCE_MM,
-        max_mv: int = MUSCLE_MAX_MV,
-        min_mv: int = MUSCLE_MIN_MV,
+        max_kpa: float = MUSCLE_MAX_KPA,
+        min_kpa: float = MUSCLE_MIN_KPA,
         rate_hz: float = DEFAULT_RATE_HZ,
         message_queue=None,
     ):
@@ -84,13 +90,13 @@ class LengthController:
         self.kp, self.ki, self.kd = float(kp), float(ki), float(kd)
         self.sign = -1 if sign < 0 else 1
         self.tolerance_mm = float(tolerance_mm)
-        self.max_mv, self.min_mv = int(max_mv), int(min_mv)
+        self.max_kpa, self.min_kpa = float(max_kpa), float(min_kpa)
         self.period = 1.0 / rate_hz
         self.msgs = message_queue
 
         self.lock = threading.Lock()
         self.pids: Dict[int, _PID] = {}     # keyed by SENSOR id
-        self.last_sent: Dict[int, int] = {}
+        self.last_sent: Dict[int, int] = {}  # sensor -> last commanded mV
         self.running = False
         self.thread = None
 
@@ -193,7 +199,8 @@ class LengthController:
                 continue  # no reading — hold last command, don't integrate
 
             with self.valve.display_lock:
-                cur_p = self.valve.valve_data.get(reg, 0)
+                cur_mv = self.valve.valve_data.get(reg, 0)   # Giga echo, mV
+            cur_p = mv_to_kpa(cur_mv)
 
             command = None
             with self.lock:
@@ -222,18 +229,19 @@ class LengthController:
                     integ = pid.integ + ki * e * dt
                     de = (e - pid.prev_err) / dt
                     raw = kp * e + integ + kd * de
-                    out = min(self.max_mv, max(self.min_mv, raw))
+                    out = min(self.max_kpa, max(self.min_kpa, raw))
                     integ += (out - raw)  # back-calculation anti-windup
                     pid.integ = integ
                     pid.prev_err = e
                     pid.prev_t = now
                     pid.output = out
                     pid.at_target = False
-                    command = int(round(out))
+                    command = round(out, 2)
 
-            if command is not None and self.last_sent.get(sensor) != command:
+            # Dedupe at the DAC's resolution: only send when the mV changes.
+            if command is not None and self.last_sent.get(sensor) != kpa_to_mv(command):
                 self.valve.set_valve(reg, command, ramp=0.0)
-                self.last_sent[sensor] = command
+                self.last_sent[sensor] = kpa_to_mv(command)
 
     # ------------------------------------------------------------------
     def get_state(self) -> dict:
@@ -241,7 +249,7 @@ class LengthController:
             controllers = {
                 sensor: {
                     "target_mm": round(pid.target_mm, 2),
-                    "output_mv": int(round(pid.output)),
+                    "output_kpa": round(pid.output, 1),
                     "error_mm": round(pid.error_mm, 3),
                     "at_target": pid.at_target,
                 }
@@ -252,6 +260,6 @@ class LengthController:
                 "gains": {"kp": self.kp, "ki": self.ki, "kd": self.kd},
                 "sign": self.sign,
                 "tolerance_mm": self.tolerance_mm,
-                "max_mv": self.max_mv,
+                "max_kpa": self.max_kpa,
                 "controllers": controllers,
             }

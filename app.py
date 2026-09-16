@@ -31,7 +31,7 @@ import serial.tools.list_ports
 from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO
 
-from valve_controller import ValveController, MAX_INPUT_VALUE, NUM_VALVES
+from valve_controller import ValveController, MAX_INPUT_KPA, NUM_VALVES
 from encoder_controller import (
     DEFAULT_COUNTS_PER_TURN,
     DEFAULT_DRUM_DIAMETER_MM,
@@ -43,7 +43,7 @@ from encoder_controller import (
 )
 from sensor_mapping import DEFAULT_MAPPING_PATH, load_mapping
 from length_controller import (
-    LengthController, MUSCLE_MAX_MV,
+    LengthController, MUSCLE_MAX_KPA,
     DEFAULT_KP, DEFAULT_KI, DEFAULT_KD, DEFAULT_SIGN, DEFAULT_TOLERANCE_MM,
 )
 
@@ -86,8 +86,8 @@ def reg_to_sensor(reg):
 
 
 def muscle_max(reg):
-    """Pressure ceiling for a valve: 3000 mV for a mapped muscle, else 4000."""
-    return MUSCLE_MAX_MV if reg_to_sensor(reg) is not None else MAX_INPUT_VALUE
+    """Pressure ceiling (kPa): 80 kPa for a mapped muscle, else 140 kPa."""
+    return MUSCLE_MAX_KPA if reg_to_sensor(reg) is not None else MAX_INPUT_KPA
 
 
 # ============================================================
@@ -201,9 +201,9 @@ def _muscles_state(enc_state):
             "sensor_online": online,
             "controlled": c is not None,
             "target_mm": c["target_mm"] if c else None,
-            "output_mv": c["output_mv"] if c else None,
+            "output_kpa": c["output_kpa"] if c else None,
             "at_target": c["at_target"] if c else False,
-            "max_mv": muscle_max(reg),
+            "max_kpa": muscle_max(reg),
         })
     return muscles
 
@@ -222,7 +222,7 @@ def build_state():
             "available": length_controller is not None,
             "gains": lc.get("gains", {"kp": DEFAULT_KP, "ki": DEFAULT_KI, "kd": DEFAULT_KD}),
             "tolerance_mm": lc.get("tolerance_mm", DEFAULT_TOLERANCE_MM),
-            "max_mv": lc.get("max_mv", MUSCLE_MAX_MV),
+            "max_kpa": lc.get("max_kpa", MUSCLE_MAX_KPA),
         },
     }
 
@@ -295,10 +295,10 @@ def _parse_ramp(data):
 
 @socketio.on('set_valve')
 def on_set_valve(data):
-    """data = {valve: int, value: int | 'off', ramp: float}
+    """data = {valve: int, value: kPa (number) | 'off', ramp: float}
 
     A manual pressure command takes the muscle out of length control.
-    Mapped muscles are clamped to the 3000 mV muscle ceiling.
+    Mapped muscles are clamped to the 80 kPa muscle ceiling.
     """
     if valve_controller is None:
         return
@@ -312,21 +312,21 @@ def on_set_valve(data):
         valve_controller.valve_off(valve, ramp=ramp)
         return
     try:
-        val = int(value)
+        val = float(value)
     except (ValueError, TypeError):
         valve_controller.message_queue.append(f"[ERR] V{valve}: invalid value '{value}'")
         return
     mx = muscle_max(valve)
     if val > mx:
         valve_controller.message_queue.append(
-            f"[ERR] V{valve}: {val} exceeds limit (max {mx})")
+            f"[ERR] V{valve}: {val:g} kPa exceeds limit (max {mx:g} kPa)")
         return
     valve_controller.set_valve(valve, val, ramp=ramp)
 
 
 @socketio.on('apply_all')
 def on_apply_all(data):
-    """data = {entries: [{valve:int, value:int|'off'}, ...], ramp: float}
+    """data = {entries: [{valve:int, value:kPa|'off'}, ...], ramp: float}
 
     Validates everything first; if anything is invalid the whole batch is
     aborted, mirroring vc2_gui.py's APPLY ALL behaviour.
@@ -343,7 +343,7 @@ def on_apply_all(data):
             pairs.append((valve, 'off'))
             continue
         try:
-            val = int(raw)
+            val = float(raw)
         except (ValueError, TypeError):
             invalid.append((valve, raw))
             continue
@@ -519,9 +519,9 @@ def main():
                         help='Path to the sensor↔regulator mapping JSON')
     # Length control (PID)
     parser.add_argument('--kp', type=float, default=DEFAULT_KP,
-                        help='Length PID proportional gain (mV/mm)')
+                        help='Length PID proportional gain (kPa/mm)')
     parser.add_argument('--ki', type=float, default=DEFAULT_KI,
-                        help='Length PID integral gain (mV/mm/s)')
+                        help='Length PID integral gain (kPa/mm/s)')
     parser.add_argument('--kd', type=float, default=DEFAULT_KD,
                         help='Length PID derivative gain')
     parser.add_argument('--pid-sign', type=int, default=DEFAULT_SIGN, choices=[-1, 1],
@@ -581,7 +581,7 @@ def main():
         )
         length_controller.start()
         print(f"Length control : ON (Kp={args.kp:g} Ki={args.ki:g} Kd={args.kd:g}, "
-              f"sign={args.pid_sign}, ±{args.tolerance:g} mm, muscle max {MUSCLE_MAX_MV} mV)")
+              f"sign={args.pid_sign}, ±{args.tolerance:g} mm, muscle max {MUSCLE_MAX_KPA:g} kPa)")
     else:
         print("Length control : off (needs both valve + encoder devices)")
 

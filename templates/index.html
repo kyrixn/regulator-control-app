@@ -56,15 +56,16 @@
       Each bar is the muscle's <strong>length in mm</strong> from its mapped
       sensor (band <span id="rangeHint">−10…2</span> mm); the label shows that
       regulator's <strong>pressure</strong> with the exact <strong>length</strong>
-      below it. The <strong>top box sets pressure (mV)</strong>; the
+      below it. The <strong>top box sets pressure (kPa)</strong>; the
       <strong>bottom box sets a target length (mm)</strong> which runs a PID
       (bottom box highlighted while active). Setting a pressure cancels that
       muscle's length control. Muscles are capped at
-      <strong>3000&nbsp;mV</strong>. <code>HOLD</code> stops every PID and holds
+      <strong>80&nbsp;kPa</strong> (unmapped valves at 140&nbsp;kPa).
+      <code>HOLD</code> stops every PID and holds
       current pressure; <code>STOP</code> vents all; <code>ZERO ALL</code> /
       <code>CLEAR ZERO</code> set the length datum; <code>SET PID</code> updates
       the gains live; <code>RESCAN</code> reloads the mapping.
-      <span id="maxHint" hidden>4000</span>
+      <span id="maxHint" hidden>140</span>
     </p>
   </section>
 

@@ -40,7 +40,7 @@ import time
 
 import serial.tools.list_ports
 
-from valve_controller import ValveController
+from valve_controller import ValveController, mv_to_kpa
 from encoder_controller import (
     DEFAULT_COUNTS_PER_TURN,
     DEFAULT_DRUM_DIAMETER_MM,
@@ -53,9 +53,11 @@ from sensor_mapping import load_mapping
 
 # ---- Test definition ------------------------------------------------------
 SENSORS = (57, 58)          # RS-485 slave ids of the two muscles under test
-PRE_INFLATE = 2000          # regulator setpoint held before zeroing
-STATE_A = (2200, 1850)      # (R57, R58)
-STATE_B = (1850, 2300)      # (R57, R58)
+# Regulator setpoints in kPa (ValveController converts to mV; 1 kPa = 16.67 mV).
+# Previously 2000 / (2200, 1850) / (1850, 2300) mV — the same pressures.
+PRE_INFLATE = 20            # regulator setpoint held before zeroing
+STATE_A = (32, 11)          # (R57, R58)
+STATE_B = (11, 38)          # (R57, R58)
 MIN_RAMP_S = 0.5            # ramp duration on the first cycle
 MAX_RAMP_S = 2.0            # ramp duration on the last cycle (sweeps linearly)
 PAUSE_S = 1              # dwell at each setpoint
@@ -65,7 +67,7 @@ SAMPLE_HZ = 50.0
 
 CSV_COLUMNS = [
     "wall_time", "elapsed_s", "cycle", "segment", "ramp_s",
-    "target_R57", "target_R58", "cmd_R57_mV", "cmd_R58_mV",
+    "target_R57", "target_R58", "cmd_R57_kPa", "cmd_R58_kPa",
     "pos_R57_mm", "pos_R58_mm", "online_R57", "online_R58",
 ]
 
@@ -128,9 +130,14 @@ class Recorder:
                          "t57": t57, "t58": t58}
 
     def _cmd(self):
+        """Last commanded pressure (kPa) of R57/R58; None while off."""
         with self.valve.display_lock:
-            data = dict(self.valve.valve_data)
-        return data.get(self.v57), data.get(self.v58)
+            data = dict(self.valve.valve_data)      # Giga echo, in mV
+
+        def kpa(reg):
+            mV = data.get(reg)
+            return None if mV is None else round(mv_to_kpa(mV), 2)
+        return kpa(self.v57), kpa(self.v58)
 
     def _sensor(self):
         by = {e["slave"]: e for e in self.encoder.get_state().get("encoders", [])}
@@ -240,7 +247,7 @@ def run(args):
             return 1
 
         # 1) Pre-inflate, hold, then zero.
-        print(f"Pre-inflating R57/R58 to {PRE_INFLATE}, holding {PRE_PAUSE_S:g}s...")
+        print(f"Pre-inflating R57/R58 to {PRE_INFLATE} kPa, holding {PRE_PAUSE_S:g}s...")
         valve.set_multiple_valves([(v57, PRE_INFLATE), (v58, PRE_INFLATE)], ramp=0.0)
         time.sleep(PRE_PAUSE_S)
         encoder.zero(57)

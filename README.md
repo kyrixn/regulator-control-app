@@ -37,15 +37,20 @@ the running kernel).
 ## Features
 
 > **Branch `len_control`.** Closed-loop length control. Each muscle can be
-> driven either by **pressure** (mV) or by a **target length** (mm) via a
+> driven either by **pressure** (kPa) or by a **target length** (mm) via a
 > conservative PID, joined to a sensor through `sensor_mapping.json`.
 
 **Regulators + muscles** — each of the 16 cells shows its muscle's
 **length (mm)** as the bar (from the mapped sensor, scaled to a configurable
 band, default **−10…2 mm**) and that regulator's **pressure** as text. Each
-cell has **two inputs**: a top **pressure** box (mV) and a bottom
+cell has **two inputs**: a top **pressure** box (kPa) and a bottom
 **target-length** box (mm). APPLY ALL, STOP, ? STATUS, and TIME ramping are
 unchanged.
+
+**Units** — pressures are entered in **kPa** (decimals allowed). The Giga sketch
+stays in its VOLTAGE (mV) mode: `valve_controller.py` converts with
+`mV = (kPa + 100) × 1000 / 60` right before sending, so the firmware, touchscreen
+and the desktop `vc2_*.py` scripts are untouched. 1 kPa = 16.67 mV.
 
 **Length control (PID)** — type a target length (mm) in a cell's bottom box to
 run a **conservative PI** loop (Kd=0 by default) that trims the regulator
@@ -55,7 +60,8 @@ steady-state error**, slow response accepted. A **±0.1 mm deadband**
 `✓`); the working range is only a few mm. Targets are keyed by **sensor id**
 (the sensor lives on the muscle; the valve may be re-wired). Setting a pressure
 on a cell cancels its length control. Muscle regulators are hard-capped at
-**3000 mV** (PID output and manual commands); unmapped valves keep 4000.
+**80 kPa** (= 3000 mV; PID output and manual commands); unmapped valves keep
+140 kPa (= 4000 mV).
 Gains are live-tunable via the **PID** fields (**SET PID**) or `--kp/--ki/--kd`,
 and the plant direction via `--pid-sign` (default `-1`: pressure ↑ shortens the
 muscle).
