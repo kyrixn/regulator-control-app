@@ -8,7 +8,7 @@
 let NUM_VALVES = 32;
 let ROW_SIZE = 8;
 let BUS_SPLIT = 16;           // valves below this are on Wire, at/above on Wire1
-let MAX_VALUE = 140;          // valve setpoint limit (kPa), overwritten by server state
+let MAX_VALUE = 200;          // valve setpoint limit (kPa), overwritten by server state
 
 const socket = io();
 const valveEls = [];          // index -> { input, bar, label, cell, id, zeroBtn, sensor }

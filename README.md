@@ -47,7 +47,7 @@ configurable band, default **−10…2 mm**) and that regulator's **pressure in
 kPa** as text (a dash `–` when the valve is off). Per-valve set boxes, APPLY
 ALL, STOP, ? STATUS, and TIME ramping are unchanged.
 
-**Units** — setpoints are entered in **kPa** (max 140 kPa, i.e. 4000 mV; decimals
+**Units** — setpoints are entered in **kPa** (max 200 kPa, i.e. 5000 mV; decimals
 allowed). The Giga sketch stays in its VOLTAGE (mV) mode: `valve_controller.py`
 converts with `mV = (kPa + 100) × 1000 / 60` right before sending, so the
 firmware, touchscreen and the desktop `vc2_*.py` scripts are untouched.

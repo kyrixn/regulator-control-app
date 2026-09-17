@@ -52,8 +52,8 @@ KPA_MAX = 500.0
 MV_FULL_SCALE = 10000
 MV_PER_KPA = MV_FULL_SCALE / (KPA_MAX - KPA_MIN)   # 16.67 mV per kPa
 
-# Safety cap on commanded pressure. 140 kPa == 4000 mV, the previous mV limit.
-MAX_INPUT_KPA = 140.0
+# Safety cap on commanded pressure (experiment branch): 200 kPa == 5000 mV.
+MAX_INPUT_KPA = 200.0
 
 
 def kpa_to_mv(kpa):
@@ -343,7 +343,7 @@ class ValveController:
         return True
 
     def set_valve(self, valve, kpa, ramp=0.0):
-        """Set a single valve to `kpa` (output pressure, -100..140 kPa).
+        """Set a single valve to `kpa` (output pressure, -100..200 kPa).
 
         If ramp > 0, linearly ramp from the current value to `kpa` over
         that many seconds instead of jumping immediately.
