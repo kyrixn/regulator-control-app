@@ -37,6 +37,20 @@ class ParseTests(unittest.TestCase):
         from valve_controller import MAX_INPUT_KPA
         self.assertEqual(C.APP_CAP_KPA, MAX_INPUT_KPA)
 
+    def test_subset_arming(self):
+        raw = example()
+        for r in ("ED", "FDS", "FDP"):
+            raw["muscles"][r]["sign"] = -1
+            raw["muscles"][r]["reference_counts"] = 0
+        cfg = C.parse(raw)
+        self.assertEqual(cfg.calibrated_roles, ["ED", "FDS", "FDP"])
+        cfg.require_armable(["ED", "FDS", "FDP"])
+        with self.assertRaisesRegex(C.ConfigError, "DI: encoder sign"):
+            cfg.require_armable(["FDP", "DI"])
+        with self.assertRaisesRegex(C.ConfigError, "PI"):
+            cfg.require_armable()
+        self.assertEqual(cfg.arm_problems(["FCU"]), ["FCU: unknown role"])
+
     def test_calibrated_config_arms_and_converts(self):
         raw = example()
         for r in C.ROLES:

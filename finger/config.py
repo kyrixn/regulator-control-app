@@ -31,7 +31,7 @@ import json
 import math
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 ROLES = ("ED", "FDS", "FDP", "DI", "PI")
 MAX_REGULATOR = 31
@@ -100,10 +100,14 @@ class FingerConfig:
             raise ConfigError(f"{role}: sign/reference not calibrated")
         return m.sign * (counts - m.reference_counts) * self.mm_per_count
 
-    def arm_problems(self) -> List[str]:
-        """Reasons this config must not drive pressure from length feedback."""
+    def arm_problems(self, roles: Optional[Sequence[str]] = None) -> List[str]:
+        """Reasons the given roles (default: all five) must not drive pressure
+        from length feedback."""
         out = []
-        for r in ROLES:
+        for r in (roles or ROLES):
+            if r not in ROLES:
+                out.append(f"{r}: unknown role")
+                continue
             m = self.muscles[r]
             if m.sign is None:
                 out.append(f"{r}: encoder sign not measured")
@@ -111,11 +115,18 @@ class FingerConfig:
                 out.append(f"{r}: reference counts not captured")
         return out
 
-    def require_armable(self) -> "FingerConfig":
-        problems = self.arm_problems()
+    def require_armable(self, roles: Optional[Sequence[str]] = None) -> "FingerConfig":
+        """Raise unless every requested role (default: all) is calibrated.
+        A controller that only drives a subset passes that subset explicitly;
+        it must never widen it later without re-checking."""
+        problems = self.arm_problems(roles)
         if problems:
             raise ConfigError("not armable: " + "; ".join(problems))
         return self
+
+    @property
+    def calibrated_roles(self) -> List[str]:
+        return [r for r in ROLES if self.muscles[r].calibrated]
 
 
 # ----------------------------------------------------------------------------
