@@ -223,7 +223,7 @@ def mode_show(cfg: C.FingerConfig) -> int:
     print(f"{cfg.mm_per_count * 1e3:.5f} um/count ({cfg.drum_diameter_mm} mm drum)")
     for r in C.ROLES:
         m = cfg.muscles[r]
-        print(f"  {r:3} V{m.regulator:<2} id{m.sensor:<3} cap {m.ceiling_kpa:g} kPa "
+        print(f"  {r:3} V{m.regulator:<2} id{m.sensor:<3} idle {m.idle_kpa:g} cap {m.ceiling_kpa:g} kPa "
               f"sign {m.sign} ref {m.reference_counts}")
     problems = cfg.arm_problems()
     print("ARMABLE" if not problems else "NOT ARMABLE:\n  " + "\n  ".join(problems))

@@ -7,9 +7,9 @@ Device-local hardware configuration for the physical index finger.
 Wiring comes from `sensor_mapping.json`, the same file app.py uses: the
 entry whose "muscle" is ED/FDS/FDP/DI/PI supplies that role's regulator and
 RS-485 sensor. `finger.local.json` (git-ignored) adds only what the mapping
-cannot know: the per-muscle pressure ceiling, the sign that turns encoder
-counts into muscle contraction, and the reference count captured at the
-maximum-extension pose. Copy `finger.local.example.json` to
+cannot know: the per-muscle pressure ceiling, the idle pretension that keeps
+its tendon taut at rest, the sign that turns encoder counts into muscle
+contraction, and the reference count captured at the maximum-extension pose. Copy `finger.local.example.json` to
 `finger.local.json` and fill it in.
 
 Two levels of validity:
@@ -58,6 +58,7 @@ class MuscleConfig:
     regulator: int
     sensor: int
     ceiling_kpa: float
+    idle_kpa: float                       # pretension at rest (tendon taut, no work)
     sign: Optional[int] = None            # +1 or -1 once measured
     reference_counts: Optional[int] = None  # absolute counts at max extension
 
@@ -211,11 +212,13 @@ def parse(raw: dict, mapping: Dict[str, Dict[str, int]], path: str = "") -> Fing
         stale = [k for k in ("regulator", "sensor") if k in d]
         if stale:
             raise ConfigError(f"{ctx}: {stale} belong in sensor_mapping.json; remove them here")
+        ceiling = _number(d, "ceiling_kpa", ctx, 0.0, APP_CAP_KPA)
         muscles[role] = MuscleConfig(
             role=role,
             regulator=mapping[role]["regulator"],
             sensor=mapping[role]["sensor"],
-            ceiling_kpa=_number(d, "ceiling_kpa", ctx, 0.0, APP_CAP_KPA),
+            ceiling_kpa=ceiling,
+            idle_kpa=_number(d, "idle_kpa", ctx, 0.0, ceiling),
             sign=sign,
             reference_counts=_opt_int(d, "reference_counts", ctx),
         )
@@ -285,14 +288,14 @@ def save(cfg: FingerConfig, path: Optional[str] = None) -> None:
     path = path or cfg.path or DEFAULT_CONFIG_PATH
     raw = {
         "_comment": ("Regulator and sensor per muscle come from ../sensor_mapping.json "
-                     "(entries named ED/FDS/FDP/DI/PI). This file adds ceilings, encoder "
-                     "signs and reference counts; calibrate.py fills the last two."),
+                     "(entries named ED/FDS/FDP/DI/PI). This file adds ceilings, idle pretension, "
+                     "encoder signs and reference counts; calibrate.py fills the last two."),
         "version": CONFIG_VERSION,
         "ports": {"valve": cfg.valve_port, "rs485": cfg.rs485_port},
         "encoder": {"baud": cfg.baud, "counts_per_turn": cfg.counts_per_turn,
                     "drum_diameter_mm": cfg.drum_diameter_mm},
         "muscles": {
-            r: {"ceiling_kpa": m.ceiling_kpa, "sign": m.sign,
+            r: {"ceiling_kpa": m.ceiling_kpa, "idle_kpa": m.idle_kpa, "sign": m.sign,
                 "reference_counts": m.reference_counts}
             for r, m in ((r, cfg.muscles[r]) for r in ROLES)
         },
@@ -317,7 +320,7 @@ if __name__ == "__main__":
     print(f"{c.mm_per_count * 1e3:.5f} um/count ({c.drum_diameter_mm} mm drum)")
     for r in ROLES:
         m = c.muscles[r]
-        print(f"  {r:3} V{m.regulator:<2} id{m.sensor:<3} cap {m.ceiling_kpa:g} kPa "
+        print(f"  {r:3} V{m.regulator:<2} id{m.sensor:<3} idle {m.idle_kpa:g} cap {m.ceiling_kpa:g} kPa "
               f"sign {m.sign} ref {m.reference_counts}")
     problems = c.arm_problems()
     print("ARMABLE" if not problems else "NOT ARMABLE:\n  " + "\n  ".join(problems))

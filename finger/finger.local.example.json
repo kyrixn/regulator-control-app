@@ -1,5 +1,5 @@
 {
-  "_comment": "Regulator and sensor per muscle come from ../sensor_mapping.json (entries named ED/FDS/FDP/DI/PI). This file adds ceilings, encoder signs and reference counts; calibrate.py fills the last two.",
+  "_comment": "Regulator and sensor per muscle come from ../sensor_mapping.json (entries named ED/FDS/FDP/DI/PI). This file adds ceilings, idle pretension, encoder signs and reference counts; calibrate.py fills the last two.",
   "version": 1,
   "ports": {
     "valve": "/dev/serial/by-id/usb-Arduino_Giga_0043003D3033511833323537-if00",
@@ -11,10 +11,35 @@
     "drum_diameter_mm": 14.0
   },
   "muscles": {
-    "ED":  { "ceiling_kpa": 80,  "sign": null, "reference_counts": null },
-    "FDS": { "ceiling_kpa": 80,  "sign": null, "reference_counts": null },
-    "FDP": { "ceiling_kpa": 80,  "sign": null, "reference_counts": null },
-    "DI":  { "ceiling_kpa": 125, "sign": null, "reference_counts": null },
-    "PI":  { "ceiling_kpa": 125, "sign": null, "reference_counts": null }
+    "ED": {
+      "ceiling_kpa": 80,
+      "idle_kpa": 20,
+      "sign": null,
+      "reference_counts": null
+    },
+    "FDS": {
+      "ceiling_kpa": 80,
+      "idle_kpa": 20,
+      "sign": null,
+      "reference_counts": null
+    },
+    "FDP": {
+      "ceiling_kpa": 80,
+      "idle_kpa": 20,
+      "sign": null,
+      "reference_counts": null
+    },
+    "DI": {
+      "ceiling_kpa": 125,
+      "idle_kpa": 30,
+      "sign": null,
+      "reference_counts": null
+    },
+    "PI": {
+      "ceiling_kpa": 125,
+      "idle_kpa": 30,
+      "sign": null,
+      "reference_counts": null
+    }
   }
 }

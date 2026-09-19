@@ -94,6 +94,8 @@ class ParseTests(unittest.TestCase):
         self.rejects(lambda r: r["muscles"]["ED"].update(regulator=18), "belong in sensor_mapping")
         self.rejects(lambda r: r["muscles"]["ED"].update(sensor=63), "belong in sensor_mapping")
         self.rejects(lambda r: r["muscles"]["ED"].update(ceiling_kpa=150), "outside")
+        self.rejects(lambda r: r["muscles"]["ED"].update(idle_kpa=90), "idle_kpa: 90.*outside")
+        self.rejects(lambda r: r["muscles"]["ED"].pop("idle_kpa"), "idle_kpa")
         self.rejects(lambda r: r["muscles"]["ED"].update(ceiling_kpa="80"), "finite number")
         self.rejects(lambda r: r["muscles"]["ED"].update(sign=2), "sign")
         self.rejects(lambda r: r["muscles"]["ED"].update(reference_counts=1.5), "integer or null")
@@ -154,6 +156,7 @@ class LoadSaveTests(unittest.TestCase):
             with open(p) as fh:
                 saved = json.load(fh)
             self.assertNotIn("regulator", saved["muscles"]["FDP"])  # wiring is not duplicated
+            self.assertEqual(saved["muscles"]["FDP"]["idle_kpa"], 20)
             again = C.load(p, m)
             self.assertEqual(again.muscles["FDP"].sign, 1)
             self.assertEqual(again.muscles["FDP"].reference_counts, 123456)

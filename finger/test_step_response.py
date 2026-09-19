@@ -22,6 +22,7 @@ def cfg():
     for r in C.ROLES:
         raw["muscles"][r]["sign"] = -1
         raw["muscles"][r]["reference_counts"] = 0
+        raw["muscles"][r]["idle_kpa"] = 30 if r in ("DI", "PI") else 20
     return C.parse(raw, {r: {"regulator": a, "sensor": b} for r, (a, b) in WIRING.items()})
 
 
@@ -56,24 +57,31 @@ def synthetic(role="FDP", idle=10.0, levels=(20.0, 40.0), gain=0.05, tau=0.4, hz
 
 class PlanTests(unittest.TestCase):
     def test_default_levels_and_duration(self):
-        p = S.make_plan(cfg(), "FDP", None, 10, 5, 5, 4, 0, 1)
-        self.assertEqual(p.levels, [20.0, 40.0, 60.0, 80.0])
+        p = S.make_plan(cfg(), "FDP", None, None, 5, 5, 4, 0, 1)
+        self.assertEqual(p.levels, [35.0, 50.0, 65.0, 80.0])
+        self.assertEqual(p.idle, {"ED": 20, "FDS": 20, "FDP": 20, "DI": 30, "PI": 30})
         self.assertEqual(p.duration(), 4 + 4 * 10)
-        p = S.make_plan(cfg(), "DI", None, 10, 5, 5, 4, 0, 2)
-        self.assertEqual(p.levels, [31.2, 62.5, 93.8, 125.0])
+        p = S.make_plan(cfg(), "DI", None, None, 5, 5, 4, 0, 2)
+        self.assertEqual(p.levels, [53.8, 77.5, 101.2, 125.0])
+        p = S.make_plan(cfg(), "DI", None, 40, 5, 5, 4, 0, 1)   # override applies to DI only
+        self.assertEqual(p.idle["DI"], 40)
+        self.assertEqual(p.idle["PI"], 30)
+        self.assertEqual(p.levels[0], 61.2)
 
     def test_rejections(self):
         c = cfg()
         with self.assertRaisesRegex(ValueError, "unknown role"):
-            S.make_plan(c, "FCU", None, 10, 5, 5, 4, 0, 1)
+            S.make_plan(c, "FCU", None, None, 5, 5, 4, 0, 1)
         with self.assertRaisesRegex(ValueError, "ceiling"):
-            S.make_plan(c, "FDP", [50, 90], 10, 5, 5, 4, 0, 1)
-        with self.assertRaisesRegex(ValueError, "idle 90 kPa exceeds ED"):
-            S.make_plan(c, "DI", [100], 90, 5, 5, 4, 0, 1)
+            S.make_plan(c, "FDP", [50, 90], None, 5, 5, 4, 0, 1)
+        with self.assertRaisesRegex(ValueError, "not above idle"):
+            S.make_plan(c, "FDP", [20, 50], None, 5, 5, 4, 0, 1)
+        with self.assertRaisesRegex(ValueError, "idle 90 kPa outside"):
+            S.make_plan(c, "FDP", [100], 90, 5, 5, 4, 0, 1)
         with self.assertRaisesRegex(ValueError, "hold"):
-            S.make_plan(c, "FDP", None, 10, 0.1, 5, 4, 0, 1)
+            S.make_plan(c, "FDP", None, None, 0.1, 5, 4, 0, 1)
         with self.assertRaisesRegex(ValueError, "cycles"):
-            S.make_plan(c, "FDP", None, 10, 5, 5, 4, 0, 0)
+            S.make_plan(c, "FDP", None, None, 5, 5, 4, 0, 0)
 
 
 class AnalysisTests(unittest.TestCase):
