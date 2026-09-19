@@ -4,18 +4,19 @@ finger/config.py
 
 Device-local hardware configuration for the physical index finger.
 
-`finger.local.json` (git-ignored) records what the shared model and the
-station repo cannot know on their own: which regulator and RS-485 sensor
-carry each anatomical muscle role, the sign that turns encoder counts into
-muscle contraction, the reference count captured at the maximum-extension
-pose, and the per-muscle pressure ceiling. Copy `finger.local.example.json`
-to `finger.local.json` and fill it in.
+Wiring comes from `sensor_mapping.json`, the same file app.py uses: the
+entry whose "muscle" is ED/FDS/FDP/DI/PI supplies that role's regulator and
+RS-485 sensor. `finger.local.json` (git-ignored) adds only what the mapping
+cannot know: the per-muscle pressure ceiling, the sign that turns encoder
+counts into muscle contraction, and the reference count captured at the
+maximum-extension pose. Copy `finger.local.example.json` to
+`finger.local.json` and fill it in.
 
 Two levels of validity:
 
-  load()            structural: every role present, ids in range, no duplicate
-                    regulator or sensor, consistent with sensor_mapping.json.
-                    Enough for read-only tools (acquisition, calibration).
+  load()            structural: every role present in both files, ids in
+                    range, no duplicate regulator or sensor. Enough for
+                    read-only tools (acquisition, calibration).
   require_armable() everything above plus a measured sign and reference for
                     every muscle. Anything that commands pressure from length
                     feedback must call this first and must not fall back to
@@ -74,6 +75,7 @@ class FingerConfig:
     drum_diameter_mm: float
     muscles: Dict[str, MuscleConfig] = field(default_factory=dict)
     path: str = ""
+    mapping_path: str = ""
 
     @property
     def mm_per_count(self) -> float:
@@ -165,8 +167,8 @@ def _string(d: dict, key: str, ctx: str) -> str:
     return v
 
 
-def parse(raw: dict, path: str = "") -> FingerConfig:
-    """Validate a decoded JSON object into a FingerConfig (structural checks)."""
+def parse(raw: dict, mapping: Dict[str, Dict[str, int]], path: str = "") -> FingerConfig:
+    """Validate the decoded local JSON plus the wiring from read_mapping()."""
     if not isinstance(raw, dict):
         raise ConfigError("top level must be an object")
     if raw.get("version") != CONFIG_VERSION:
@@ -206,31 +208,27 @@ def parse(raw: dict, path: str = "") -> FingerConfig:
         sign = d.get("sign")
         if sign is not None and sign not in (1, -1):
             raise ConfigError(f"{ctx}.sign: expected 1, -1 or null, got {sign!r}")
+        stale = [k for k in ("regulator", "sensor") if k in d]
+        if stale:
+            raise ConfigError(f"{ctx}: {stale} belong in sensor_mapping.json; remove them here")
         muscles[role] = MuscleConfig(
             role=role,
-            regulator=_int(d, "regulator", ctx, 0, MAX_REGULATOR),
-            sensor=_int(d, "sensor", ctx, 1, MAX_SLAVE),
+            regulator=mapping[role]["regulator"],
+            sensor=mapping[role]["sensor"],
             ceiling_kpa=_number(d, "ceiling_kpa", ctx, 0.0, APP_CAP_KPA),
             sign=sign,
             reference_counts=_opt_int(d, "reference_counts", ctx),
         )
-
-    for key in ("regulator", "sensor"):
-        seen: Dict[int, str] = {}
-        for role in ROLES:
-            v = getattr(muscles[role], key)
-            if v in seen:
-                raise ConfigError(f"duplicate {key} {v}: {seen[v]} and {role}")
-            seen[v] = role
 
     return FingerConfig(valve_port=valve_port, rs485_port=rs485_port, baud=baud,
                         counts_per_turn=cpt, drum_diameter_mm=drum,
                         muscles=muscles, path=path)
 
 
-def check_against_mapping(cfg: FingerConfig, mapping_path: str = DEFAULT_MAPPING_PATH) -> None:
-    """Refuse silently diverging sources: sensor_mapping.json (used by app.py)
-    must name the same regulator/sensor pair for every role."""
+def read_mapping(mapping_path: str = DEFAULT_MAPPING_PATH) -> Dict[str, Dict[str, int]]:
+    """Strict read of sensor_mapping.json: {role: {"regulator", "sensor"}} for
+    the five finger roles. Unlike sensor_mapping.load_mapping (tolerant, keyed
+    by regulator, used by the web app) this refuses anything incomplete."""
     try:
         with open(mapping_path, "r", encoding="utf-8") as fh:
             raw = json.load(fh)
@@ -241,28 +239,33 @@ def check_against_mapping(cfg: FingerConfig, mapping_path: str = DEFAULT_MAPPING
     entries = raw.get("muscles") if isinstance(raw, dict) else None
     if not isinstance(entries, list):
         raise ConfigError(f"sensor mapping has no 'muscles' list: {mapping_path}")
-    by_role = {}
+    name = os.path.basename(mapping_path)
+    out: Dict[str, Dict[str, int]] = {}
     for e in entries:
-        if isinstance(e, dict) and e.get("muscle") in ROLES:
-            by_role[e["muscle"]] = e
-    for role in ROLES:
-        m = cfg.muscles[role]
-        e = by_role.get(role)
-        if e is None:
-            raise ConfigError(f"{role}: not present in {os.path.basename(mapping_path)}")
-        if e.get("regulator") != m.regulator or e.get("sensor") != m.sensor:
-            raise ConfigError(
-                f"{role}: local config says regulator {m.regulator}/sensor {m.sensor}, "
-                f"{os.path.basename(mapping_path)} says "
-                f"regulator {e.get('regulator')}/sensor {e.get('sensor')}")
+        if not isinstance(e, dict) or e.get("muscle") not in ROLES:
+            continue
+        role = e["muscle"]
+        if role in out:
+            raise ConfigError(f"{name}: role {role} appears more than once")
+        ctx = f"{name}[{role}]"
+        out[role] = {"regulator": _int(e, "regulator", ctx, 0, MAX_REGULATOR),
+                     "sensor": _int(e, "sensor", ctx, 1, MAX_SLAVE)}
+    missing = [r for r in ROLES if r not in out]
+    if missing:
+        raise ConfigError(f"{name}: no entry for roles {missing}")
+    for key in ("regulator", "sensor"):
+        seen: Dict[int, str] = {}
+        for role in ROLES:
+            v = out[role][key]
+            if v in seen:
+                raise ConfigError(f"{name}: duplicate {key} {v}: {seen[v]} and {role}")
+            seen[v] = role
+    return out
 
 
 def load(path: str = DEFAULT_CONFIG_PATH,
-         mapping_path: Optional[str] = DEFAULT_MAPPING_PATH) -> FingerConfig:
-    """Load and structurally validate the local config.
-
-    Pass mapping_path=None to skip the sensor_mapping.json cross-check.
-    """
+         mapping_path: str = DEFAULT_MAPPING_PATH) -> FingerConfig:
+    """Load the local config and the wiring from sensor_mapping.json."""
     try:
         with open(path, "r", encoding="utf-8") as fh:
             raw = json.load(fh)
@@ -272,9 +275,8 @@ def load(path: str = DEFAULT_CONFIG_PATH,
             "to finger.local.json and fill it in")
     except json.JSONDecodeError as exc:
         raise ConfigError(f"{path} is not valid JSON: {exc}")
-    cfg = parse(raw, path)
-    if mapping_path is not None:
-        check_against_mapping(cfg, mapping_path)
+    cfg = parse(raw, read_mapping(mapping_path), path)
+    cfg.mapping_path = mapping_path
     return cfg
 
 
@@ -282,13 +284,15 @@ def save(cfg: FingerConfig, path: Optional[str] = None) -> None:
     """Write the config back (used by calibration tools to persist sign/reference)."""
     path = path or cfg.path or DEFAULT_CONFIG_PATH
     raw = {
+        "_comment": ("Regulator and sensor per muscle come from ../sensor_mapping.json "
+                     "(entries named ED/FDS/FDP/DI/PI). This file adds ceilings, encoder "
+                     "signs and reference counts; calibrate.py fills the last two."),
         "version": CONFIG_VERSION,
         "ports": {"valve": cfg.valve_port, "rs485": cfg.rs485_port},
         "encoder": {"baud": cfg.baud, "counts_per_turn": cfg.counts_per_turn,
                     "drum_diameter_mm": cfg.drum_diameter_mm},
         "muscles": {
-            r: {"regulator": m.regulator, "sensor": m.sensor,
-                "ceiling_kpa": m.ceiling_kpa, "sign": m.sign,
+            r: {"ceiling_kpa": m.ceiling_kpa, "sign": m.sign,
                 "reference_counts": m.reference_counts}
             for r, m in ((r, cfg.muscles[r]) for r in ROLES)
         },
@@ -308,7 +312,8 @@ if __name__ == "__main__":
     except ConfigError as exc:
         print(f"[ERR] {exc}")
         raise SystemExit(1)
-    print(f"{c.path}: valve {c.valve_port}, rs485 {c.rs485_port} @ {c.baud}")
+    print(f"{c.path} + {c.mapping_path}")
+    print(f"valve {c.valve_port}, rs485 {c.rs485_port} @ {c.baud}")
     print(f"{c.mm_per_count * 1e3:.5f} um/count ({c.drum_diameter_mm} mm drum)")
     for r in ROLES:
         m = c.muscles[r]

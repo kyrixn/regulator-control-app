@@ -34,13 +34,20 @@ class FakeBus:
         pass
 
 
+WIRING = {"ED": (18, 63), "FDS": (17, 1), "FDP": (16, 65), "DI": (19, 54), "PI": (20, 69)}
+
+
 def make_cfg(tmpdir):
     with open(C.EXAMPLE_CONFIG_PATH, encoding="utf-8") as fh:
         raw = json.load(fh)
     p = os.path.join(tmpdir, "finger.local.json")
     with open(p, "w") as fh:
         json.dump(raw, fh)
-    return C.load(p, mapping_path=None)
+    m = os.path.join(tmpdir, "sensor_mapping.json")
+    with open(m, "w") as fh:
+        json.dump({"muscles": [{"muscle": r, "regulator": reg, "sensor": sen}
+                               for r, (reg, sen) in WIRING.items()]}, fh)
+    return C.load(p, m)
 
 
 class HelperTests(unittest.TestCase):
@@ -77,7 +84,7 @@ class ModeTests(unittest.TestCase):
             bus = FakeBus({63: 1000, 1: 2000, 65: 3000, 54: 4000, 69: 5000})
             rc = K.mode_reference(bus, cfg, list(C.ROLES), 0.05, 0.05, yes=True)
             self.assertEqual(rc, 0)
-            again = C.load(cfg.path, mapping_path=None)
+            again = C.load(cfg.path, cfg.mapping_path)
             self.assertEqual([again.muscles[r].reference_counts for r in C.ROLES],
                              [1000, 2000, 3000, 4000, 5000])
             self.assertTrue(all(again.muscles[r].sign is None for r in C.ROLES))
@@ -100,7 +107,7 @@ class ModeTests(unittest.TestCase):
             with mock.patch("builtins.input", side_effect=fake_input):
                 rc = K.mode_sign(bus, cfg, ["ED", "DI"], 0.05, 0.05, 0.5)
             self.assertEqual(rc, 0)
-            again = C.load(cfg.path, mapping_path=None)
+            again = C.load(cfg.path, cfg.mapping_path)
             self.assertEqual(again.muscles["ED"].sign, -1)
             self.assertIsNone(again.muscles["DI"].sign)
             # contraction is positive for a shortening move with the stored sign

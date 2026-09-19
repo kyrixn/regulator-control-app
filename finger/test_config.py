@@ -1,6 +1,5 @@
 """Unit tests for finger/config.py. Run: .venv/bin/python -m unittest finger.test_config"""
 
-import copy
 import json
 import os
 import sys
@@ -11,15 +10,30 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from finger import config as C  # noqa: E402
 
+WIRING = {"ED": (18, 63), "FDS": (17, 1), "FDP": (16, 65), "DI": (19, 54), "PI": (20, 69)}
+
 
 def example():
     with open(C.EXAMPLE_CONFIG_PATH, encoding="utf-8") as fh:
         return json.load(fh)
 
 
+def mapping():
+    return {r: {"regulator": reg, "sensor": sen} for r, (reg, sen) in WIRING.items()}
+
+
+def write_mapping(path, entries):
+    with open(path, "w") as fh:
+        json.dump({"muscles": entries}, fh)
+
+
+def good_entries():
+    return [{"muscle": r, "regulator": reg, "sensor": sen} for r, (reg, sen) in WIRING.items()]
+
+
 class ParseTests(unittest.TestCase):
     def test_example_parses_but_is_not_armable(self):
-        cfg = C.parse(example())
+        cfg = C.parse(example(), mapping())
         self.assertEqual(cfg.sensors, [63, 1, 65, 54, 69])
         self.assertEqual(cfg.regulators, [18, 17, 16, 19, 20])
         self.assertEqual(cfg.role_of_sensor(54), "DI")
@@ -30,8 +44,14 @@ class ParseTests(unittest.TestCase):
         with self.assertRaises(C.ConfigError):
             cfg.contraction_mm("ED", 0)
 
-    def test_example_matches_sensor_mapping(self):
-        C.check_against_mapping(C.parse(example()))
+    def test_example_loads_against_the_real_mapping(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "finger.local.json")
+            with open(p, "w") as fh:
+                json.dump(example(), fh)
+            cfg = C.load(p)  # default mapping path = ../sensor_mapping.json
+            self.assertEqual(cfg.mapping_path, C.DEFAULT_MAPPING_PATH)
+            self.assertEqual(len(cfg.muscles), 5)
 
     def test_cap_matches_valve_layer(self):
         from valve_controller import MAX_INPUT_KPA
@@ -42,7 +62,7 @@ class ParseTests(unittest.TestCase):
         for r in ("ED", "FDS", "FDP"):
             raw["muscles"][r]["sign"] = -1
             raw["muscles"][r]["reference_counts"] = 0
-        cfg = C.parse(raw)
+        cfg = C.parse(raw, mapping())
         self.assertEqual(cfg.calibrated_roles, ["ED", "FDS", "FDP"])
         cfg.require_armable(["ED", "FDS", "FDP"])
         with self.assertRaisesRegex(C.ConfigError, "DI: encoder sign"):
@@ -56,7 +76,7 @@ class ParseTests(unittest.TestCase):
         for r in C.ROLES:
             raw["muscles"][r]["sign"] = -1
             raw["muscles"][r]["reference_counts"] = 1000
-        cfg = C.parse(raw).require_armable()
+        cfg = C.parse(raw, mapping()).require_armable()
         # -1 sign: counts rising means the muscle paid out (negative contraction)
         self.assertAlmostEqual(cfg.contraction_mm("ED", 1000 + cfg.counts_per_turn),
                                -3.141592653589793 * 14.0)
@@ -65,16 +85,14 @@ class ParseTests(unittest.TestCase):
         raw = example()
         mutate(raw)
         with self.assertRaisesRegex(C.ConfigError, needle):
-            C.parse(raw)
+            C.parse(raw, mapping())
 
     def test_rejections(self):
         self.rejects(lambda r: r.update(version=2), "version")
         self.rejects(lambda r: r["muscles"].pop("PI"), "missing roles")
         self.rejects(lambda r: r["muscles"].update(FCU={}), "unknown roles")
-        self.rejects(lambda r: r["muscles"]["PI"].update(regulator=19), "duplicate regulator")
-        self.rejects(lambda r: r["muscles"]["PI"].update(sensor=63), "duplicate sensor")
-        self.rejects(lambda r: r["muscles"]["ED"].update(regulator=32), "outside")
-        self.rejects(lambda r: r["muscles"]["ED"].update(sensor=0), "outside")
+        self.rejects(lambda r: r["muscles"]["ED"].update(regulator=18), "belong in sensor_mapping")
+        self.rejects(lambda r: r["muscles"]["ED"].update(sensor=63), "belong in sensor_mapping")
         self.rejects(lambda r: r["muscles"]["ED"].update(ceiling_kpa=150), "outside")
         self.rejects(lambda r: r["muscles"]["ED"].update(ceiling_kpa="80"), "finite number")
         self.rejects(lambda r: r["muscles"]["ED"].update(sign=2), "sign")
@@ -82,38 +100,69 @@ class ParseTests(unittest.TestCase):
         self.rejects(lambda r: r["ports"].update(rs485=r["ports"]["valve"]), "must differ")
         self.rejects(lambda r: r["ports"].update(valve=""), "non-empty")
 
-    def test_mapping_mismatch_is_refused(self):
-        cfg = C.parse(example())
+
+class MappingTests(unittest.TestCase):
+    def check(self, entries, needle):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "sensor_mapping.json")
-            with open(p, "w") as fh:
-                json.dump({"muscles": [{"muscle": r, "regulator": cfg.muscles[r].regulator,
-                                        "sensor": cfg.muscles[r].sensor} for r in C.ROLES]}, fh)
-            C.check_against_mapping(cfg, p)
-            with open(p, "w") as fh:
-                json.dump({"muscles": [{"muscle": "DI", "regulator": 19, "sensor": 57}]}, fh)
-            with self.assertRaisesRegex(C.ConfigError, "not present|says"):
-                C.check_against_mapping(cfg, p)
+            write_mapping(p, entries)
+            with self.assertRaisesRegex(C.ConfigError, needle):
+                C.read_mapping(p)
 
+    def test_good_mapping_ignores_other_muscles(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "sensor_mapping.json")
+            write_mapping(p, good_entries() + [{"muscle": "FCU", "regulator": 3, "sensor": 58}])
+            self.assertEqual(C.read_mapping(p), mapping())
+
+    def test_bad_mappings(self):
+        e = good_entries()
+        self.check(e[:4], r"no entry for roles \['PI'\]")
+        self.check(e + [e[0]], "appears more than once")
+        e = good_entries(); e[1]["regulator"] = 18
+        self.check(e, "duplicate regulator 18")
+        e = good_entries(); e[1]["sensor"] = 63
+        self.check(e, "duplicate sensor 63")
+        e = good_entries(); e[0]["sensor"] = None
+        self.check(e, "expected an integer")
+        e = good_entries(); e[0]["regulator"] = 32
+        self.check(e, "outside")
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "sensor_mapping.json")
+            with self.assertRaisesRegex(C.ConfigError, "not found"):
+                C.read_mapping(p)
+            with open(p, "w") as fh:
+                fh.write('{"muscles": [ {"muscle": "PI"}, ]}')  # trailing comma
+            with self.assertRaisesRegex(C.ConfigError, "not valid JSON"):
+                C.read_mapping(p)
+
+
+class LoadSaveTests(unittest.TestCase):
     def test_load_save_roundtrip_and_missing_file(self):
         with tempfile.TemporaryDirectory() as d:
+            m = os.path.join(d, "sensor_mapping.json")
+            write_mapping(m, good_entries())
             p = os.path.join(d, "finger.local.json")
             with self.assertRaisesRegex(C.ConfigError, "no local config"):
-                C.load(p, mapping_path=None)
+                C.load(p, m)
             with open(p, "w") as fh:
                 json.dump(example(), fh)
-            cfg = C.load(p, mapping_path=None)
+            cfg = C.load(p, m)
             cfg.muscles["FDP"].sign = 1
             cfg.muscles["FDP"].reference_counts = 123456
             C.save(cfg)
-            again = C.load(p, mapping_path=None)
+            with open(p) as fh:
+                saved = json.load(fh)
+            self.assertNotIn("regulator", saved["muscles"]["FDP"])  # wiring is not duplicated
+            again = C.load(p, m)
             self.assertEqual(again.muscles["FDP"].sign, 1)
             self.assertEqual(again.muscles["FDP"].reference_counts, 123456)
+            self.assertEqual(again.muscles["FDP"].regulator, 16)
             self.assertIsNone(again.muscles["ED"].sign)
             with open(p, "w") as fh:
                 fh.write("{ not json")
             with self.assertRaisesRegex(C.ConfigError, "not valid JSON"):
-                C.load(p, mapping_path=None)
+                C.load(p, m)
 
 
 if __name__ == "__main__":

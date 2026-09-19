@@ -218,7 +218,8 @@ def mode_sign(bus: Bus, cfg: C.FingerConfig, roles: Sequence[str], settle: float
 
 
 def mode_show(cfg: C.FingerConfig) -> int:
-    print(f"{cfg.path}: valve {cfg.valve_port}, rs485 {cfg.rs485_port} @ {cfg.baud}")
+    print(f"{cfg.path} + {cfg.mapping_path}")
+    print(f"valve {cfg.valve_port}, rs485 {cfg.rs485_port} @ {cfg.baud}")
     print(f"{cfg.mm_per_count * 1e3:.5f} um/count ({cfg.drum_diameter_mm} mm drum)")
     for r in C.ROLES:
         m = cfg.muscles[r]
@@ -246,6 +247,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("mode", choices=["watch", "reference", "sign", "show"])
     ap.add_argument("roles", nargs="*", help="muscle roles (ED FDS FDP DI PI)")
     ap.add_argument("--config", default=C.DEFAULT_CONFIG_PATH)
+    ap.add_argument("--mapping", default=C.DEFAULT_MAPPING_PATH,
+                    help="sensor_mapping.json supplying regulator/sensor per role")
     ap.add_argument("--port", help="override the RS-485 port from the config")
     ap.add_argument("--settle", type=float, default=2.0, help="capture window (s)")
     ap.add_argument("--max-drift-mm", type=float, default=0.05,
@@ -257,7 +260,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        cfg = C.load(args.config)
+        cfg = C.load(args.config, args.mapping)
     except C.ConfigError as exc:
         print(f"[ERR] {exc}")
         return 1
