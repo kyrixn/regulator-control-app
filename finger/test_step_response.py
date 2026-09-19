@@ -59,13 +59,13 @@ class PlanTests(unittest.TestCase):
     def test_default_levels_and_duration(self):
         p = S.make_plan(cfg(), "FDP", None, None, 5, 5, 4, 0, 1)
         self.assertEqual(p.levels, [35.0, 50.0, 65.0, 80.0])
-        self.assertEqual(p.idle, {"ED": 20, "FDS": 20, "FDP": 20, "DI": 30, "PI": 30})
+        self.assertEqual(p.idle, {"ED": 10, "FDS": 10, "FDP": 20, "DI": 10, "PI": 10})
         self.assertEqual(p.duration(), 4 + 4 * 10)
         p = S.make_plan(cfg(), "DI", None, None, 5, 5, 4, 0, 2)
         self.assertEqual(p.levels, [53.8, 77.5, 101.2, 125.0])
-        p = S.make_plan(cfg(), "DI", None, 40, 5, 5, 4, 0, 1)   # override applies to DI only
+        p = S.make_plan(cfg(), "DI", None, 40, 5, 5, 4, 0, 1, others=15)
         self.assertEqual(p.idle["DI"], 40)
-        self.assertEqual(p.idle["PI"], 30)
+        self.assertEqual(p.idle["PI"], 15)
         self.assertEqual(p.levels[0], 61.2)
 
     def test_rejections(self):
@@ -78,6 +78,8 @@ class PlanTests(unittest.TestCase):
             S.make_plan(c, "FDP", [20, 50], None, 5, 5, 4, 0, 1)
         with self.assertRaisesRegex(ValueError, "idle 90 kPa outside"):
             S.make_plan(c, "FDP", [100], 90, 5, 5, 4, 0, 1)
+        with self.assertRaisesRegex(ValueError, "others 90 kPa exceeds ED"):
+            S.make_plan(c, "DI", None, None, 5, 5, 4, 0, 1, others=90)
         with self.assertRaisesRegex(ValueError, "hold"):
             S.make_plan(c, "FDP", None, None, 0.1, 5, 4, 0, 1)
         with self.assertRaisesRegex(ValueError, "cycles"):

@@ -5,15 +5,16 @@ finger/step_response.py
 Open-loop pressure step response of ONE finger muscle. Stage 2 groundwork:
 measure the plant before designing the loop around it.
 
-Sequence (all five muscles sit at their own idle pretension from the config,
-idle_kpa, so every tendon is taut and the pose is defined):
+Sequence (the tested muscle starts from its own idle pretension, idle_kpa in
+the config; the other four sit at a low --others pressure, 10 kPa by default,
+so the antagonists keep their tendons taut without stiffening the joints):
 
     idle ... settle
     for each level:  step ROLE -> level, hold      (rise, static gain)
                      step ROLE -> idle,  rest      (unloading, hysteresis)
     vent everything
 
-The other four muscles stay at idle throughout; their length traces show
+The other four muscles stay at --others throughout; their length traces show
 coupling. Lengths are logged for all five at the bus rate (~39 Hz) together
 with the commanded pressure echoed by the Giga. At the end the script prints,
 per level: settled contraction, static gain in mm/kPa, 63 % rise time, and
@@ -59,7 +60,7 @@ ANALYSIS_WINDOW_S = 1.0
 class Plan:
     role: str
     levels: List[float]
-    idle: Dict[str, float]          # per role, from the config (test role overridable)
+    idle: Dict[str, float]          # tested role: its idle_kpa (or --idle); others: --others
     hold: float
     rest: float
     settle: float
@@ -75,13 +76,21 @@ def default_levels(idle: float, ceiling: float) -> List[float]:
     return [round(idle + (ceiling - idle) * k / 4, 1) for k in (1, 2, 3, 4)]
 
 
+DEFAULT_OTHERS_KPA = 10.0
+
+
 def make_plan(cfg: C.FingerConfig, role: str, levels: Optional[Sequence[float]],
               idle_override: Optional[float], hold: float, rest: float, settle: float,
-              ramp: float, cycles: int) -> Plan:
+              ramp: float, cycles: int, others: float = DEFAULT_OTHERS_KPA) -> Plan:
     if role not in C.ROLES:
         raise ValueError(f"unknown role {role!r}; choose from {list(C.ROLES)}")
     ceiling = cfg.muscles[role].ceiling_kpa
-    idle = {r: cfg.muscles[r].idle_kpa for r in C.ROLES}
+    if others < 0:
+        raise ValueError("others pressure must be >= 0")
+    for r in C.ROLES:
+        if r != role and others > cfg.muscles[r].ceiling_kpa:
+            raise ValueError(f"others {others:g} kPa exceeds {r} ceiling {cfg.muscles[r].ceiling_kpa:g}")
+    idle = {r: (cfg.muscles[r].idle_kpa if r == role else others) for r in C.ROLES}
     if idle_override is not None:
         if not 0 <= idle_override <= ceiling:
             raise ValueError(f"{role}: idle {idle_override} kPa outside 0..{ceiling} (ceiling)")
@@ -318,7 +327,7 @@ def describe(plan: Plan, cfg: C.FingerConfig) -> str:
         f"role      : {plan.role} = regulator {m.regulator}, sensor {m.sensor}, "
         f"ceiling {m.ceiling_kpa:g} kPa",
         f"levels    : {plan.levels} kPa, {'step' if plan.ramp == 0 else f'{plan.ramp:g} s ramp'}",
-        f"idle      : {plan.role} {plan.idle[plan.role]:g} kPa; others {others} kPa",
+        f"idle      : {plan.role} {plan.idle[plan.role]:g} kPa; others {others} kPa (low, to avoid co-contraction)",
         f"timing    : settle {plan.settle:g} s, hold {plan.hold:g} s, rest {plan.rest:g} s, "
         f"{plan.cycles} cycle(s) -> about {plan.duration():.0f} s",
     ])
@@ -351,7 +360,8 @@ def run(plan: Plan, cfg: C.FingerConfig, valve_port: str, rs485_port: str,
         valve.emergency_stop()
         time.sleep(0.3)
         rec.start()
-        print(f"idle pretension on all five, settling {plan.settle:g} s ...")
+        print(f"{plan.role} at idle {idle:g} kPa, others at {plan.idle[[r for r in C.ROLES if r != plan.role][0]]:g} kPa, "
+              f"settling {plan.settle:g} s ...")
         rec.set_phase("idle", None)
         valve.set_multiple_valves(all_idle, ramp=min(2.0, plan.settle / 2))
         sleep_watch(plan.settle)
@@ -406,7 +416,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("role", help="ED FDS FDP DI PI")
     ap.add_argument("--levels", help="comma-separated kPa levels (default: 4 equal steps idle..ceiling)")
     ap.add_argument("--idle", type=float, default=None,
-                    help="override the tested muscle's idle_kpa from the config (others keep theirs)")
+                    help="override the tested muscle's idle_kpa from the config")
+    ap.add_argument("--others", type=float, default=DEFAULT_OTHERS_KPA,
+                    help="pressure on the four untested muscles (kPa, default 10)")
     ap.add_argument("--hold", type=float, default=5.0, help="seconds at each level")
     ap.add_argument("--rest", type=float, default=5.0, help="seconds back at idle after each level")
     ap.add_argument("--settle", type=float, default=4.0, help="seconds at idle before the first step")
@@ -428,7 +440,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         cfg.require_armable()
         levels = [float(x) for x in args.levels.split(",")] if args.levels else None
         plan = make_plan(cfg, role, levels, args.idle, args.hold, args.rest, args.settle,
-                         args.ramp, args.cycles)
+                         args.ramp, args.cycles, args.others)
     except (C.ConfigError, ValueError) as exc:
         print(f"[ERR] {exc}")
         return 1
