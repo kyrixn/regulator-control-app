@@ -4,8 +4,8 @@
     { "muscle": "FDP", "regulator": 16,  "sensor": 73 },
     { "muscle": "FDS", "regulator": 17,  "sensor": 72 },
     { "muscle": "ED", "regulator": 18,  "sensor": 63 },
-    { "muscle": "DI", "regulator": 19,  "sensor": 54 },
-    { "muscle": "PI", "regulator": 20,  "sensor": 69 }
+    { "muscle": "DI", "regulator": 19,  "sensor": 70 },
+    { "muscle": "PI", "regulator": 20,  "sensor": 71 }
   ]
 }
     
