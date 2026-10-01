@@ -36,7 +36,7 @@ hand-typed commands. No automatic actuation is part of this milestone.
    named `WCH USB-SERIAL Ch A (COM7)` … `Ch H (COM14)`, manufacturer
    `wch.cn`, on bus `USB2MCOM\USB55D9_COM_0n` (PID 55D9 = CH348). pyserial
    reports no VID/PID for them (`USB VID:PID=0000:0000`). The station uses
-   channels A–D (COM7–COM10).
+   channels A–C with about 11 sensors each (user, 2026-09-29; earlier A–D).
 2. Giga check, read-only: open its COM port, read the banner, send `p`, `?`,
    `a`. Expect 16 DACs initialised, 4 ADC boards, all setpoints 0, and, with
    air off, every ADC channel near 1.67 V (0 kPa).
@@ -53,7 +53,8 @@ return the COM ports whose manufacturer is `wch.cn` and whose description
 contains `USB-SERIAL Ch`, sorted by channel letter. The WCH driver hides the
 VID, so matching on VID 1A86 would find nothing. The Giga is still found by
 VID 2341. Auto mode opens all eight channels, and E–H go idle after their
-empty scan. `--rs485-ports COM7,COM8,COM9,COM10` restricts it to A–D.
+empty scan. `--rs485-ports` restricts the set; nothing in the code assumes a
+number of sensors per channel.
 
 **Sensor hub (new `sensor_hub.py`).**
 - Owns one `EncoderController` per port, each with its own poll thread.
@@ -171,7 +172,16 @@ mapping table above; mismatches are fixed in `sensor_mapping.json` and in
 
 ## Open items
 
-- Which of channels A–D each sensor is on. B1 finds out.
+- Which of channels A–C each sensor is on (about 11 per channel). B1 finds out.
+- COM numbers follow the USB socket. After the adapter was re-plugged the same
+  day, channels A–H became COM20, 16, 21, 15, 22, 19, 18, 17. The app and scan
+  tool order channels by letter, so nothing needs editing.
+- Giga check 2026-09-29, read-only (`p`, `?`, `a`) on COM8: PONG, all 32
+  setpoints 0, and 32 ADC channels (so the 4-board firmware is on the board).
+  But 31 channels read 0.47–0.50 V, grouped by ADC board, and C15 reads
+  1.88 V. Setup step 2 expected about 1.67 V (0 kPa). Recheck with the
+  regulators powered and the air off: either they were unpowered, or their
+  monitor output does not use the command's −100…500 kPa scale.
 - A first read-only poll on 2026-09-29, with wiring in progress, got no
   answer from any id on COM7–COM10. The ports opened and timed out normally.
 - Adapting the finger tools to the full-hand mapping.

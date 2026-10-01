@@ -17,7 +17,7 @@ all keep working against the same sketch.
 Hardware target: Arduino Giga R1 running vc2/vc2.ino.
   16 GP8403 DACs (8 per I2C bus, 2 channels each = 32 valves):
   - Valves  0..15  on Wire   (SDA/SCL)
-  - Valves 16..31  on Wire1  (SDA1/SCL1)
+  - Valves 16..31  on Wire2  (SDA2/SCL2)
 
 Arduino command set (Serial @ 115200, values in mV):
   valve,value          Set single valve: 0,3000 or 20,2100
@@ -41,7 +41,7 @@ from encoder_controller import is_ch9344_port
 
 NUM_VALVES = 32
 ROW_SIZE = 8
-BUS_SPLIT = 16          # valves 0..15 -> Wire, 16..31 -> Wire1
+BUS_SPLIT = 16          # valves 0..15 -> Wire, 16..31 -> Wire2
 RAMP_STEP = 0.04        # seconds between setpoints while ramping (~25 Hz)
 
 # Regulator transfer function: the DAC's 0-10 V output commands -100..500 kPa,
@@ -72,10 +72,21 @@ def mv_to_bar(mV):
     return max(0.0, mv_to_kpa(mV) / 100.0)
 
 
+def check_max_kpa(max_kpa):
+    """Validate a session pressure cap in kPa: it may only lower MAX_INPUT_KPA."""
+    value = float(max_kpa)
+    if not 0 < value <= MAX_INPUT_KPA:
+        raise ValueError(
+            f"max kPa must be > 0 and <= {MAX_INPUT_KPA:g}, got {max_kpa}")
+    return value
+
+
 class ValveController:
     """32-valve serial interface (headless)."""
 
-    def __init__(self, port=None, baudrate=115200):
+    def __init__(self, port=None, baudrate=115200, max_kpa=MAX_INPUT_KPA):
+        # Checked first, so a bad cap never gets as far as opening a port.
+        self.max_kpa = check_max_kpa(max_kpa)
         self.ser = None
         self.baudrate = baudrate
         self.running = False
@@ -335,15 +346,15 @@ class ValveController:
 
     def _value_within_limit(self, kpa):
         """Return True if a kPa setpoint is allowed to be sent to the hardware."""
-        if kpa > MAX_INPUT_KPA:
+        if kpa > self.max_kpa:
             self.message_queue.append(
-                f"[ERR] Value {kpa:g} kPa exceeds limit (max {MAX_INPUT_KPA:g} kPa)"
+                f"[ERR] Value {kpa:g} kPa exceeds limit (max {self.max_kpa:g} kPa)"
             )
             return False
         return True
 
     def set_valve(self, valve, kpa, ramp=0.0):
-        """Set a single valve to `kpa` (output pressure, -100..140 kPa).
+        """Set a single valve to `kpa` (output pressure, -100..max_kpa kPa).
 
         If ramp > 0, linearly ramp from the current value to `kpa` over
         that many seconds instead of jumping immediately.
@@ -433,7 +444,7 @@ class ValveController:
             "bus_split": BUS_SPLIT,
             "unit": "kPa",
             "min_value": KPA_MIN,
-            "max_value": MAX_INPUT_KPA,
+            "max_value": self.max_kpa,
             "valves": valves,
             "active": len(valves),
         }

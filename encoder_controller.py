@@ -46,17 +46,18 @@ from modbus_rtu import (
 )
 
 
-# EKU081 8-port USB↔RS-485 adapter (WCH CH9344). Its vendor driver creates one
-# node per port — /dev/ttyCH9344USB0 … USB7 — and, being out of tree, those
-# nodes are not always enumerated by pyserial, so we glob /dev as well.
-# ttyCH343USB* covers the 1/2-port CH343 sibling driver.
+# EKU081 8-port USB↔RS-485 adapter (a WCH CH348; its Linux driver is `ch9344`).
+# Linux: the vendor driver creates one node per port, /dev/ttyCH9344USB0 …
+# USB7, and being out of tree those nodes are not always enumerated by
+# pyserial, so we glob /dev as well. ttyCH343USB* covers the 1/2-port CH343
+# sibling driver.
+# Windows: WCH's USBMSER driver names the ports "WCH USB-SERIAL Ch A (COM7)" …
+# "Ch H", manufacturer "wch.cn", and hides the USB VID/PID from pyserial
+# (hwid "USB VID:PID=0000:0000"), so the channels are matched by name.
 CH9344_PREFIXES = ("ttyCH9344", "ttyCH343")
 CH9344_GLOBS = ("/dev/ttyCH9344USB*", "/dev/ttyCH343USB*")
-
-
-def is_ch9344_port(device: str) -> bool:
-    """True for a device node of the CH9344/CH343 USB↔RS-485 adapter."""
-    return any(pre in (device or "") for pre in CH9344_PREFIXES)
+WCH_MANUFACTURER = "wch.cn"
+WCH_CHANNEL_RE = re.compile(r"USB-SERIAL Ch ([A-Z])\b")
 
 
 def port_index(device: str) -> int:
@@ -65,10 +66,32 @@ def port_index(device: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def wch_channel(port_info) -> Optional[str]:
+    """Channel letter (A-H) of a Windows WCH multi-port COM port, else None."""
+    if (getattr(port_info, "manufacturer", None) or "").lower() != WCH_MANUFACTURER:
+        return None
+    m = WCH_CHANNEL_RE.search(getattr(port_info, "description", None) or "")
+    return m.group(1) if m else None
+
+
+def list_wch_com_ports() -> List[str]:
+    """Windows WCH multi-port COM ports, channel A first."""
+    chans = [(wch_channel(p), port_index(p.device), p.device)
+             for p in serial.tools.list_ports.comports()]
+    return [dev for _, _, dev in sorted(c for c in chans if c[0])]
+
+
 def list_ch9344_ports() -> List[str]:
-    """CH9344 device nodes present in /dev, lowest port number first."""
-    return sorted({d for pat in CH9344_GLOBS for d in glob.glob(pat)},
-                  key=port_index)
+    """EKU081 channels: Linux nodes by number, then Windows COM ports by channel."""
+    linux = sorted({d for pat in CH9344_GLOBS for d in glob.glob(pat)}, key=port_index)
+    return linux + [d for d in list_wch_com_ports() if d not in linux]
+
+
+def is_ch9344_port(device: str) -> bool:
+    """True for a channel of the EKU081 adapter (Linux node or Windows COM port)."""
+    if any(pre in (device or "") for pre in CH9344_PREFIXES):
+        return True
+    return bool(device) and device in list_wch_com_ports()
 
 
 DEFAULT_COUNTS_PER_TURN = 2_097_152  # 21-bit single-turn resolution
@@ -131,6 +154,7 @@ class EncoderController:
         drum_diameter_mm: float = DEFAULT_DRUM_DIAMETER_MM,
         timeout: float = 0.06,
         interval: float = 0.2,
+        autostart: bool = True,
     ):
         self.ser = None
         self.baudrate = baudrate
@@ -157,6 +181,13 @@ class EncoderController:
         self.state_lock = threading.Lock()
         self.message_queue = deque(maxlen=50)
 
+        # RESCAN requests from other threads. The poll thread runs the scan, so
+        # only one thread ever talks on the port (two would interleave frames).
+        self._rescan_requested = threading.Event()
+        self._pending_ids: Optional[List[int]] = None
+
+        if not autostart:
+            return            # tests: no port, no thread
         if port:
             self.connect(port)
         else:
@@ -298,50 +329,65 @@ class EncoderController:
     # Background polling
     # ------------------------------------------------------------------
 
+    def _ids_text(self) -> str:
+        return (f"ids {self.slave_ids[0]}-{self.slave_ids[-1]}"
+                if self.slave_ids else "no ids")
+
     def _scan(self) -> None:
-        """One pass over every configured id to find the encoders present."""
-        found = []
+        """One pass over every configured id to find the encoders present.
+
+        Readings of ids that no longer answer are dropped, so a sensor that
+        went away does not keep showing its last value.
+        """
+        found: Dict[int, EncoderReading] = {}
         for slave in self.slave_ids:
+            if not self.running:
+                return
             try:
-                reading = self._read_encoder(slave)
+                found[slave] = self._read_encoder(slave)
             except Exception:
                 continue
-            found.append(slave)
-            with self.state_lock:
-                self.readings[slave] = reading
-        self.active_slaves = found
-        msg = (f"Scan complete: {len(found)} encoder(s) online "
-               f"in ids {self.slave_ids[0]}-{self.slave_ids[-1]}"
-               if found else
-               f"No encoders found in ids {self.slave_ids[0]}-{self.slave_ids[-1]}")
-        self.message_queue.append(msg)
+        with self.state_lock:
+            self.readings = found
+        self.active_slaves = list(found)
+        self.message_queue.append(
+            f"Scan complete: {len(found)} encoder(s) online in {self._ids_text()}"
+            if found else f"No encoders found in {self._ids_text()}; idle until RESCAN")
 
     def _poll_loop(self) -> None:
-        """Scan once, then continuously refresh the encoders that answered."""
+        """Scan once, then keep refreshing the encoders that answered."""
         self._scan()
         while self.running:
-            if not self.active_slaves:
-                # Nothing responded; retry a full scan periodically.
-                time.sleep(max(1.0, self.interval))
-                if self.running:
-                    self._scan()
-                continue
+            self._poll_once()
 
-            for slave in self.active_slaves:
-                if not self.running:
-                    break
-                try:
-                    reading = self._read_encoder(slave)
-                except Exception as exc:
-                    reading = EncoderReading(
-                        slave=slave,
-                        online=False,
-                        message=str(exc).replace("\n", " ")[:40],
-                        timestamp=time.time(),
-                    )
-                with self.state_lock:
-                    self.readings[slave] = reading
-            time.sleep(self.interval)
+    def _poll_once(self) -> None:
+        """One poll-thread step: a requested rescan, an idle wait, or a sweep."""
+        if self._rescan_requested.is_set():
+            self._rescan_requested.clear()
+            if self._pending_ids is not None:
+                self.slave_ids, self._pending_ids = self._pending_ids, None
+            self._scan()
+            return
+        if not self.active_slaves:
+            # Nothing answered on this port: stay quiet until RESCAN.
+            self._rescan_requested.wait(0.5)
+            return
+        for slave in self.active_slaves:
+            if not self.running:
+                return
+            try:
+                reading = self._read_encoder(slave)
+            except Exception as exc:
+                reading = EncoderReading(
+                    slave=slave,
+                    online=False,
+                    message=str(exc).replace("\n", " ")[:40],
+                    timestamp=time.time(),
+                )
+            with self.state_lock:
+                self.readings[slave] = reading
+        # Sleep between sweeps, but wake at once for a RESCAN.
+        self._rescan_requested.wait(self.interval)
 
     # ------------------------------------------------------------------
     # Web-driven actions (replace the terminal 'z' / 'c' keystrokes)
@@ -381,10 +427,16 @@ class EncoderController:
             self.zero_offsets = {}
         self.message_queue.append("Cleared all zero offsets")
 
-    def rescan(self) -> None:
-        """Force a fresh scan across the full slave-id range."""
+    def request_rescan(self, slave_ids: Optional[Sequence[int]] = None) -> None:
+        """Ask the poll thread to re-sweep, optionally over a new id list."""
+        if slave_ids is not None:
+            self._pending_ids = list(slave_ids)
         self.message_queue.append("Rescanning...")
-        self._scan()
+        self._rescan_requested.set()
+
+    def rescan(self) -> None:
+        """Alias of request_rescan() for older callers."""
+        self.request_rescan()
 
     # ------------------------------------------------------------------
     # State accessors (used by the web layer)
@@ -438,7 +490,8 @@ class EncoderController:
             "parity": self.parity,
             "counts_per_turn": self.counts_per_turn,
             "drum_diameter_mm": self.drum_diameter_mm,
-            "scanned_range": [self.slave_ids[0], self.slave_ids[-1]],
+            "scanned_range": ([self.slave_ids[0], self.slave_ids[-1]]
+                              if self.slave_ids else None),
             "encoders": encoders,
             "online": online,
             "zeroed": len(zero_offsets),
@@ -454,6 +507,7 @@ class EncoderController:
     def close(self) -> None:
         """Stop polling and close the connection."""
         self.running = False
+        self._rescan_requested.set()      # wake an idle or sleeping poll thread
         if self.poll_thread:
             self.poll_thread.join(timeout=1)
         if self.ser:

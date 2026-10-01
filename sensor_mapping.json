@@ -1,11 +1,35 @@
 {
-  "_comment": "Maps each regulator (valve id 0-31) to the sensor (RS-485 slave id) measuring its muscle's length. Edit sensor ids to match wiring; use null to leave a regulator unmapped. Edits take effect on the next RESCAN.",
+  "_comment": "Muscle -> regulator (valve id 0-31) and length sensor (RS-485 slave id). regulator null = sensor wired, no regulator yet; sensor null = regulator wired, sensor not yet (planned id in note). region: forearm (xlsx 'lower arm') or palm (xlsx 'hand', the intrinsic muscles); it sets the web app's length-bar band. Transcribed from bionic_hand/muscle_id.xlsx on 2026-09-29; the upper-arm muscles (biceps brevis/longus, brachialis: V29-31, sensors 173-175) dropped on 2026-09-30 as not part of the hand. Edits take effect on the next RESCAN.",
   "muscles": [
-    { "muscle": "FDP", "regulator": 16,  "sensor": 73 },
-    { "muscle": "FDS", "regulator": 17,  "sensor": 72 },
-    { "muscle": "ED", "regulator": 18,  "sensor": 63 },
-    { "muscle": "DI", "regulator": 19,  "sensor": 70 },
-    { "muscle": "PI", "regulator": 20,  "sensor": 71 }
+    { "muscle": "FDP1", "regulator": 8,    "sensor": 50,   "region": "forearm" },
+    { "muscle": "FDP2", "regulator": 9,    "sensor": 51,   "region": "forearm" },
+    { "muscle": "FDP3", "regulator": 10,   "sensor": 52,   "region": "forearm" },
+    { "muscle": "FDP4", "regulator": null, "sensor": 53,   "region": "forearm" },
+    { "muscle": "FDS1", "regulator": 12,   "sensor": 54,   "region": "forearm" },
+    { "muscle": "FDS2", "regulator": 13,   "sensor": 55,   "region": "forearm" },
+    { "muscle": "FDS3", "regulator": 14,   "sensor": 56,   "region": "forearm" },
+    { "muscle": "FDS4", "regulator": null, "sensor": 57,   "region": "forearm" },
+    { "muscle": "FPL",  "regulator": 11,   "sensor": null, "region": "forearm", "note": "sensor 58 not connected yet" },
+    { "muscle": "EPL",  "regulator": 15,   "sensor": 60,   "region": "forearm" },
+    { "muscle": "ED1",  "regulator": 16,   "sensor": 61,   "region": "forearm" },
+    { "muscle": "ED2",  "regulator": 17,   "sensor": 62,   "region": "forearm" },
+    { "muscle": "ED3",  "regulator": 18,   "sensor": 63,   "region": "forearm" },
+    { "muscle": "ED4",  "regulator": null, "sensor": 64,   "region": "forearm" },
+    { "muscle": "PT",   "regulator": 1,    "sensor": 65,   "region": "forearm" },
+    { "muscle": "Sup",  "regulator": 2,    "sensor": 66,   "region": "forearm" },
+    { "muscle": "FCU",  "regulator": 3,    "sensor": 67,   "region": "forearm" },
+    { "muscle": "FCR",  "regulator": 4,    "sensor": 68,   "region": "forearm" },
+    { "muscle": "ECU",  "regulator": 5,    "sensor": 69,   "region": "forearm" },
+    { "muscle": "ECR",  "regulator": 6,    "sensor": 70,   "region": "forearm" },
+    { "muscle": "DI1",  "regulator": 20,   "sensor": 75,   "region": "palm" },
+    { "muscle": "DI2",  "regulator": 21,   "sensor": 76,   "region": "palm" },
+    { "muscle": "DI3",  "regulator": 22,   "sensor": 77,   "region": "palm" },
+    { "muscle": "DI4",  "regulator": null, "sensor": 78,   "region": "palm" },
+    { "muscle": "APB",  "regulator": 23,   "sensor": 79,   "region": "palm" },
+    { "muscle": "PI1",  "regulator": 24,   "sensor": 81,   "region": "palm" },
+    { "muscle": "PI2",  "regulator": 25,   "sensor": 82,   "region": "palm" },
+    { "muscle": "PI3",  "regulator": 26,   "sensor": 83,   "region": "palm" },
+    { "muscle": "PI4",  "regulator": null, "sensor": 84,   "region": "palm" },
+    { "muscle": "OP",   "regulator": 27,   "sensor": 86,   "region": "palm" }
   ]
 }
-    

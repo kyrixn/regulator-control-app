@@ -13,6 +13,9 @@
       <div class="status-pill" id="valvePill">
         <span class="dot"></span><span id="valveText">VALVES …</span>
       </div>
+      <div class="status-pill" id="sensorPill">
+        <span class="dot"></span><span id="sensorText">SENSORS …</span>
+      </div>
     </div>
   </header>
 
@@ -36,8 +39,9 @@
       </aside>
     </div>
     <p class="hint">
-      Each bar is the muscle's <strong>length in mm</strong> from its mapped
-      sensor (band <span id="rangeHint">−10…2</span> mm); the label shows that
+      Each cell is labelled with its valve and the <strong>muscle</strong> it
+      drives. Each bar is the muscle's <strong>length in mm</strong> from its mapped
+      sensor (band <span id="rangeHint">−10…10</span> mm); the label shows that
       regulator's <strong>pressure</strong> (<code>–</code> when off) with the
       exact <strong>length in mm</strong> below it (the bar saturates outside
       the band, so read the number). Enter
@@ -48,6 +52,19 @@
       <code>Z</code> zeros that sensor; <code>ZERO ALL</code> zeros every sensor;
       <code>CLEAR ZERO</code> returns to absolute; <code>RESCAN</code> re-sweeps
       the bus and reloads the mapping.
+    </p>
+  </section>
+
+  <!-- ===================== SENSORS (EKU081 RS-485) ===================== -->
+  <section class="panel" id="sensorPanel">
+    <h2 class="panel-title">Sensors <span class="src">— EKU081 RS-485</span>
+      <span class="sensor-summary" id="sensorSummary"></span></h2>
+    <div class="sensor-strip" id="sensorStrip"></div>
+    <p class="hint">
+      Every sensor in the mapping plus any other id that answers, by id:
+      muscle, regulator, port and length. <strong>Dashed</strong> = mapped but not
+      found on any port; <strong>teal border</strong> = answering but not in the
+      mapping; <strong>red border</strong> = the same id answers on two ports.
     </p>
   </section>
 

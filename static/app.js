@@ -2,12 +2,13 @@
 // Each of the 32 valve cells now shows its muscle's LENGTH (mm, from the mapped
 // sensor) as a bar and the regulator's PRESSURE as text. The standalone encoder
 // table is gone; sensors are zeroed per-cell or globally.
+// A strip below lists every sensor (mapped or answering) with its port.
 
 // Layout defaults; reconciled with the server's reported num_valves/row_size/
 // bus_split so the grid follows the Arduino build (16 DACs -> 32 valves).
 let NUM_VALVES = 32;
 let ROW_SIZE = 8;
-let BUS_SPLIT = 16;           // valves below this are on Wire, at/above on Wire1
+let BUS_SPLIT = 16;           // valves below this are on Wire, at/above on Wire2
 let MAX_VALUE = 140;          // valve setpoint limit (kPa), overwritten by server state
 
 const socket = io();
@@ -17,7 +18,7 @@ const valveEls = [];          // index -> { input, bar, label, cell, id, zeroBtn
 // Build the valve grid: ceil(NUM_VALVES / ROW_SIZE) rows of ROW_SIZE cells.
 // ------------------------------------------------------------------
 function busName(valve) {
-  return valve < BUS_SPLIT ? 'Wire' : 'Wire1';
+  return valve < BUS_SPLIT ? 'Wire' : 'Wire2';
 }
 
 function buildValves() {
@@ -62,7 +63,11 @@ function buildValves() {
 
       const id = document.createElement('div');
       id.className = 'valve-id';
-      id.textContent = `V${i}`;
+      const vname = document.createElement('span');
+      vname.textContent = `V${i}`;
+      const mname = document.createElement('span');
+      mname.className = 'muscle-name';
+      id.append(vname, mname);
 
       const input = document.createElement('input');
       input.type = 'text';
@@ -86,7 +91,7 @@ function buildValves() {
       cell.appendChild(zeroBtn);
       valveRow.appendChild(cell);
 
-      valveEls[i] = { input, bar, label, press, len, cell, id, zeroBtn, sensor: null };
+      valveEls[i] = { input, bar, label, press, len, cell, id, mname, zeroBtn, sensor: null };
     }
   }
 }
@@ -188,11 +193,14 @@ function renderValves(state) {
   const vstate = state.valves;
   const muscles = state.muscles || [];
   const minMM = state.length_bar_min_mm ?? -10;
-  const maxMM = state.length_bar_max_mm ?? 2;
-  const span = (maxMM - minMM) || 1;
+  const maxMM = state.length_bar_max_mm ?? 10;
 
   const rangeHint = document.getElementById('rangeHint');
-  if (rangeHint) rangeHint.textContent = `${minMM}…${maxMM}`;
+  if (rangeHint) {
+    const bands = Object.entries(state.length_bar_bands_mm || {})
+      .map(([region, [lo, hi]]) => `, ${region} ${lo}…${hi}`).join('');
+    rangeHint.textContent = `${minMM}…${maxMM}${bands}`;
+  }
 
   const pill = document.getElementById('valvePill');
   const text = document.getElementById('valveText');
@@ -212,15 +220,19 @@ function renderValves(state) {
     const el = valveEls[i];
     const m = muscles[i] || {};
 
-    // Length bar from the mapped sensor's mm, scaled to [minMM, maxMM].
-    // The bar saturates outside the band, so the exact length is shown as text.
+    // Length bar from the mapped sensor's mm, scaled to the muscle's own band
+    // (palmar muscles use a narrower one). The bar saturates outside the band,
+    // so the exact length is shown as text.
+    const lo = m.bar_min_mm ?? minMM;
+    const hi = m.bar_max_mm ?? maxMM;
+    const span = (hi - lo) || 1;
     const pos = m.position_mm;
     if (pos === null || pos === undefined) {
       el.bar.style.height = '0%';
       el.bar.classList.toggle('stale', true);
       el.len.textContent = '– mm';
     } else {
-      const pct = Math.max(0, Math.min(100, ((pos - minMM) / span) * 100));
+      const pct = Math.max(0, Math.min(100, ((pos - lo) / span) * 100));
       el.bar.style.height = pct + '%';
       el.bar.classList.toggle('stale', !m.sensor_online);
       el.len.textContent = `${pos.toFixed(2)} mm`;
@@ -237,9 +249,16 @@ function renderValves(state) {
       el.cell.classList.remove('on');
     }
 
+    // Muscle driven by this regulator, next to the valve id.
+    const muscle = m.muscle || '';
+    el.mname.textContent = muscle;
+
     // Per-cell zero target.
     const sensor = (m.sensor === undefined) ? null : m.sensor;
     el.sensor = sensor;
+    el.cell.title = muscle
+      ? `V${i} · ${muscle} · ${sensor !== null ? `sensor ${sensor}` : 'no sensor'}`
+      : `V${i} · not in the mapping`;
     const mapped = sensor !== null;
     el.zeroBtn.disabled = !mapped;
     el.zeroBtn.title = mapped
@@ -263,6 +282,70 @@ function renderValves(state) {
 }
 
 // ------------------------------------------------------------------
+// Rendering — all sensors: every mapped id plus any other id that answers
+// ------------------------------------------------------------------
+function sensorChip(id, e, info, dup) {
+  const chip = document.createElement('div');
+  chip.className = 'chip';
+  if (!info) chip.classList.add('unmapped');
+  if (!e) chip.classList.add('missing');
+  else if (!e.online) chip.classList.add('offline');
+  if (dup) chip.classList.add('dup');
+
+  const head = document.createElement('div');
+  head.className = 'chip-head';
+  head.textContent = `${id} ${info ? info.muscle : 'unmapped'}`;
+  const sub = document.createElement('div');
+  sub.className = 'chip-sub';
+  const reg = info && info.regulator !== null ? `V${info.regulator}` : 'no V';
+  sub.textContent = `${reg} · ${e ? e.port : 'not found'}`;
+  const val = document.createElement('div');
+  val.className = 'chip-val';
+  if (!e) val.textContent = '—';
+  else if (e.online && e.position_mm !== null) val.textContent = `${e.position_mm.toFixed(2)} mm`;
+  else val.textContent = e.message || 'offline';
+
+  chip.append(head, sub, val);
+  chip.title = `${head.textContent} · ${sub.textContent} · ${val.textContent}`;
+  return chip;
+}
+
+function renderSensors(state) {
+  const enc = state.encoders;
+  const index = state.sensor_index || {};
+  const pill = document.getElementById('sensorPill');
+  const text = document.getElementById('sensorText');
+  const summary = document.getElementById('sensorSummary');
+  const strip = document.getElementById('sensorStrip');
+
+  const found = {};
+  ((enc && enc.encoders) || []).forEach((e) => { found[e.slave] = e; });
+  const ids = [...new Set([...Object.keys(found), ...Object.keys(index)].map(Number))]
+    .sort((a, b) => a - b);
+  const dups = new Set((enc && enc.duplicates) || []);
+
+  strip.innerHTML = '';
+  ids.forEach((id) => strip.appendChild(sensorChip(id, found[id], index[String(id)], dups.has(id))));
+
+  const expected = Object.keys(index).length || ids.length;
+  if (!enc) {
+    pill.className = 'status-pill disconnected';
+    text.textContent = 'SENSORS OFF';
+    summary.textContent = '';
+    return;
+  }
+  if (!enc.connected) {
+    pill.className = 'status-pill disconnected';
+    text.textContent = 'SENSORS LOST';
+  } else {
+    pill.className = enc.online > 0 ? 'status-pill active' : 'status-pill';
+    text.textContent = `SENSORS ${enc.online}/${expected}`;
+  }
+  const perPort = (enc.ports || []).map((p) => `${p.port} ${p.online}`).join(' · ');
+  summary.textContent = perPort + (dups.size ? ` · duplicate ids: ${[...dups].join(', ')}` : '');
+}
+
+// ------------------------------------------------------------------
 // Activity log
 // ------------------------------------------------------------------
 const logEl = document.getElementById('log');
@@ -277,13 +360,15 @@ function logLine(line) {
 // ------------------------------------------------------------------
 // Socket wiring
 // ------------------------------------------------------------------
-socket.on('state', (state) => renderValves(state));
+socket.on('state', (state) => { renderValves(state); renderSensors(state); });
 socket.on('messages', (data) => (data.lines || []).forEach(logLine));
 socket.on('connect', () => logLine('[web] connected to server'));
 socket.on('disconnect', () => {
-  const pill = document.getElementById('valvePill');
-  pill.className = 'status-pill disconnected';
+  ['valvePill', 'sensorPill'].forEach((id) => {
+    document.getElementById(id).className = 'status-pill disconnected';
+  });
   document.getElementById('valveText').textContent = 'SERVER LOST';
+  document.getElementById('sensorText').textContent = 'SERVER LOST';
 });
 
 buildValves();

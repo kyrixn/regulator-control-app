@@ -9,41 +9,42 @@ serial devices of the station over two separate USB ports:
     (vc2/vc2.ino protocol). Enumerates as e.g. /dev/ttyACM0 "Arduino Giga".
     Setpoints are entered in kPa; ValveController converts to the mV the
     sketch expects.
-  - EKU081 8-port USB↔RS-485 adapter (GJW encoders) — position/turns/speed
-    readout, via EncoderController (Modbus RTU). Its WCH CH9344 driver creates
-    one node per port: /dev/ttyCH9344USB0 … USB7. The encoder bus defaults to
-    the lowest-numbered node; use --rs485-port to pick another.
+  - EKU081 8-port USB↔RS-485 adapter (GJW draw-wire sensors) — one poll
+    thread per channel, merged by SensorHub. Linux: /dev/ttyCH9344USB0 … USB7;
+    Windows: "WCH USB-SERIAL Ch A (COMn)" … "Ch H". Every channel is opened by
+    default; --rs485-ports restricts it.
 
-Both ports are opened at once, so the browser can command valves and watch the
-encoders live side by side. Either device may be absent — the app runs with
+Both devices are opened at once, so the browser can command valves and watch
+all sensors live side by side. Either device may be absent — the app runs with
 whichever it can open.
 
 Usage:
-    python app.py                                   # auto-detect both ports
-    python app.py --valve-port /dev/ttyACM0 --rs485-port /dev/ttyCH9344USB0
-    python app.py --rs485-port /dev/ttyCH9344USB3 --no-valves
-    python app.py --ids 50-80 --baud 115200 --parity N
+    python app.py                                   # auto-detect everything
+    python app.py --max-kpa 50                      # lower the pressure cap
+    python app.py --valve-port /dev/ttyACM0 --rs485-ports /dev/ttyCH9344USB0
+    python app.py --no-valves                       # sensors only
 """
 
 import argparse
+import sys
 import time
 from types import SimpleNamespace
+from typing import List, Optional, Tuple
 
 import serial.tools.list_ports
 from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO
 
-from valve_controller import ValveController, MAX_INPUT_KPA, NUM_VALVES
+from valve_controller import ValveController, MAX_INPUT_KPA, NUM_VALVES, check_max_kpa
 from encoder_controller import (
     DEFAULT_COUNTS_PER_TURN,
     DEFAULT_DRUM_DIAMETER_MM,
-    EncoderController,
-    is_ch9344_port,
+    DEFAULT_SLAVE_IDS,
     list_ch9344_ports,
     parse_slave_ids,
-    port_index,
 )
-from sensor_mapping import DEFAULT_MAPPING_PATH, load_mapping
+from sensor_hub import SensorHub
+from sensor_mapping import DEFAULT_MAPPING_PATH, load_all
 
 
 app = Flask(__name__)
@@ -51,42 +52,51 @@ app.config['SECRET_KEY'] = 'vc2-pneumatic-station'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # Length-bar scaling (mm). Configurable here in code, not via CLI. Each valve's
-# bar plots its mapped sensor's length within this band.
-LENGTH_BAR_MIN_MM = -10.0
-LENGTH_BAR_MAX_MM = 2.0
+# bar plots its mapped sensor's length within the band of its muscle's region
+# (sensor_mapping.json "region"); palmar muscles travel less than forearm ones.
+LENGTH_BAR_BANDS_MM = {"palm": (-4.0, 4.0)}
+LENGTH_BAR_DEFAULT_MM = (-10.0, 10.0)
 
-# Two shared controllers, created in main(). Either may stay None if its device
-# is absent or disabled.
+
+def bar_band(region):
+    """(min_mm, max_mm) of the length bar for a muscle region."""
+    return LENGTH_BAR_BANDS_MM.get(region, LENGTH_BAR_DEFAULT_MM)
+
+# Two shared devices, created in main(). Either may stay None if absent or
+# disabled. The sensors are one SensorHub over every RS-485 channel in use.
 valve_controller = None
-encoder_controller = None
+sensor_hub = None
 _broadcast_started = False
 
-# regulator (valve id) -> {"muscle", "sensor"}; loaded in main(), reloaded on
-# RESCAN so edits to sensor_mapping.json apply without restarting the server.
+# regulator (valve id) -> {"muscle", "sensor"} and sensor id -> {"muscle",
+# "regulator"}; loaded in main(), reloaded on RESCAN so edits to
+# sensor_mapping.json apply without restarting the server.
 sensor_map = {}
+sensor_index = {}
 mapping_path = DEFAULT_MAPPING_PATH
+ids_from_mapping = True     # False when --ids fixes the scanned ids
 
 
 # ============================================================
 # Port resolution — tell the Giga R1 from the RS-485 adapter
 # ============================================================
 
-def _usb_ports():
-    """Serial ports that look like real USB/CDC devices (skip ttyS*).
-
-    Includes the EKU081's /dev/ttyCH9344USB* nodes, merged in from a /dev glob
-    because the out-of-tree CH9344 driver is not always visible to pyserial.
-    """
+def _usb_ports(eku):
+    """Serial ports that look like real USB/CDC devices, plus the EKU081
+    channels in `eku` (globbed on Linux, so maybe unseen by pyserial).
+    Bluetooth COM ports are skipped: opening one can stall on a connect."""
     out = []
     for p in serial.tools.list_ports.comports():
         dev = p.device or ""
-        if ("ttyACM" in dev or "ttyUSB" in dev or is_ch9344_port(dev)
+        if "BTHENUM" in (p.hwid or "").upper():
+            continue
+        if ("ttyACM" in dev or "ttyUSB" in dev or dev in eku
                 or dev.upper().startswith("COM")):
             out.append(p)
     seen = {p.device for p in out}
     out += [SimpleNamespace(device=d, description="CH9344 USB-RS485 (EKU081)",
-                            hwid="USB VID:PID=1a86:CH9344")
-            for d in list_ch9344_ports() if d not in seen]
+                            hwid="", product=None, manufacturer=None)
+            for d in eku if d not in seen]
     return out
 
 
@@ -103,9 +113,7 @@ def _is_giga(p):
 
 
 def _is_rs485_bridge(p):
-    """USB↔RS-485 adapters: the EKU081 first, then common bridge chips."""
-    if is_ch9344_port(p.device):
-        return True
+    """Common USB↔RS-485 bridge chips (EKU081 channels are resolved earlier)."""
     b = _blob(p)
     return any(k in b for k in (
         "1a86", "ch340", "ch343", "ch9344", "single serial",  # WCH
@@ -115,35 +123,51 @@ def _is_rs485_bridge(p):
     ))
 
 
-def resolve_ports(args):
-    """Pick distinct ports for the valve regulator and the RS-485 adapter."""
-    ports = _usb_ports()
+def resolve_ports(args) -> Tuple[Optional[str], List[str]]:
+    """Pick the valve regulator port and the RS-485 sensor ports, all distinct."""
+    eku = list_ch9344_ports()
+    ports = _usb_ports(set(eku))
 
     valve_port = args.valve_port
     if not valve_port and not args.no_valves:
-        # A CH9344 node is never the regulator, whatever its description says.
+        # An EKU081 channel is never the regulator, whatever its description says.
         valve_port = next((p.device for p in ports
-                           if _is_giga(p) and not is_ch9344_port(p.device)), None)
+                           if _is_giga(p) and p.device not in eku), None)
 
-    rs485_port = args.rs485_port
-    if not rs485_port and not args.no_encoders:
-        others = [p for p in ports if p.device != valve_port]
-        # The EKU081 (CH9344) is the station's adapter — its lowest-numbered
-        # port carries the encoder bus; pass --rs485-port to use another.
-        ch9344 = sorted((p.device for p in others if is_ch9344_port(p.device)),
-                        key=port_index)
-        rs485_port = ch9344[0] if ch9344 else None
-        if not rs485_port:
-            rs485_port = next(
-                (p.device for p in others if _is_rs485_bridge(p)), None)
-        if not rs485_port:  # fall back to any other USB port
-            rs485_port = next((p.device for p in others), None)
+    rs485_ports: List[str] = []
+    if not args.no_encoders:
+        if args.rs485_ports:
+            rs485_ports = list(args.rs485_ports)
+        else:
+            # Every EKU081 channel: channels without sensors go idle after their
+            # first scan. --rs485-ports restricts the set.
+            rs485_ports = [d for d in eku if d != valve_port]
+            if not rs485_ports:
+                # No EKU081: fall back to a generic bridge, never the Giga.
+                others = [p for p in ports if p.device != valve_port and not _is_giga(p)]
+                fallback = (next((p.device for p in others if _is_rs485_bridge(p)), None)
+                            or next((p.device for p in others), None))
+                rs485_ports = [fallback] if fallback else []
 
-    if valve_port and rs485_port and valve_port == rs485_port:
+    if valve_port and valve_port in rs485_ports:
         raise SystemExit(
-            f"[ERR] valve and RS-485 ports are the same ({valve_port}); "
-            "pass distinct --valve-port / --rs485-port")
-    return valve_port, rs485_port
+            f"[ERR] {valve_port} is both the valve port and an RS-485 port; "
+            "pass distinct --valve-port / --rs485-ports")
+    return valve_port, rs485_ports
+
+
+def default_slave_ids(index) -> List[int]:
+    """Sensor ids to scan without --ids: every sensor in the mapping, or the old
+    default range when the mapping names none."""
+    return sorted(index) or list(DEFAULT_SLAVE_IDS)
+
+
+def parse_port_list(value: str) -> List[str]:
+    """'COM7,COM8' -> ['COM7', 'COM8']."""
+    ports = [p.strip() for p in value.split(",") if p.strip()]
+    if not ports:
+        raise argparse.ArgumentTypeError("expected at least one port")
+    return ports
 
 
 # ============================================================
@@ -165,25 +189,30 @@ def _muscles_state(enc_state):
         m = sensor_map.get(reg, {})
         sensor = m.get("sensor")
         pos, online = positions.get(sensor, (None, False))
+        lo, hi = bar_band(m.get("region"))
         muscles.append({
             "regulator": reg,
-            "muscle": m.get("muscle", f"muscle_{reg:02d}"),
+            "muscle": m.get("muscle"),          # None: regulator not in the mapping
             "sensor": sensor,
             "position_mm": pos,
             "sensor_online": online,
+            "bar_min_mm": lo,
+            "bar_max_mm": hi,
         })
     return muscles
 
 
 def build_state():
-    """Full snapshot pushed to the browser: valves, encoders, joined muscles."""
-    enc_state = encoder_controller.get_state() if encoder_controller else None
+    """Full snapshot pushed to the browser: valves, sensors, joined muscles."""
+    enc_state = sensor_hub.get_state() if sensor_hub else None
     return {
         "valves": valve_controller.get_state() if valve_controller else None,
         "encoders": enc_state,
         "muscles": _muscles_state(enc_state),
-        "length_bar_min_mm": LENGTH_BAR_MIN_MM,
-        "length_bar_max_mm": LENGTH_BAR_MAX_MM,
+        "sensor_index": {str(s): v for s, v in sensor_index.items()},
+        "length_bar_min_mm": LENGTH_BAR_DEFAULT_MM[0],
+        "length_bar_max_mm": LENGTH_BAR_DEFAULT_MM[1],
+        "length_bar_bands_mm": {k: list(v) for k, v in LENGTH_BAR_BANDS_MM.items()},
     }
 
 
@@ -199,8 +228,8 @@ def _broadcast_loop():
         lines = []
         if valve_controller:
             lines += [f"[VC2] {m}" for m in valve_controller.drain_messages()]
-        if encoder_controller:
-            lines += [f"[ENC] {m}" for m in encoder_controller.drain_messages()]
+        if sensor_hub:
+            lines += [f"[ENC] {m}" for m in sensor_hub.drain_messages()]
         if lines:
             socketio.emit('messages', {'lines': lines})
         socketio.sleep(0.2)
@@ -293,7 +322,7 @@ def on_apply_all(data):
         except (ValueError, TypeError):
             invalid.append((valve, raw))
             continue
-        if val > MAX_INPUT_KPA:
+        if val > valve_controller.max_kpa:
             invalid.append((valve, raw))
             continue
         pairs.append((valve, val))
@@ -345,36 +374,37 @@ def on_ping():
 @socketio.on('zero')
 def on_zero():
     """Global ZERO ALL — zero every online sensor."""
-    if encoder_controller is not None:
-        encoder_controller.zero_all()
+    if sensor_hub is not None:
+        sensor_hub.zero_all()
 
 
 @socketio.on('zero_sensor')
 def on_zero_sensor(data):
     """Individual zero — zero one sensor. data = {slave: int}."""
-    if encoder_controller is None:
+    if sensor_hub is None:
         return
     try:
         slave = int(data.get('slave'))
     except (ValueError, TypeError):
         return
-    encoder_controller.zero(slave)
+    sensor_hub.zero(slave)
 
 
 @socketio.on('clear_zero')
 def on_clear_zero():
     """Global CLEAR ZERO — drop every zero offset (back to absolute mm)."""
-    if encoder_controller is not None:
-        encoder_controller.clear_zero()
+    if sensor_hub is not None:
+        sensor_hub.clear_zero()
 
 
 @socketio.on('rescan')
 def on_rescan():
-    """Re-sweep the RS-485 bus and re-read the sensor mapping."""
-    global sensor_map
-    if encoder_controller is not None:
-        encoder_controller.rescan()
-    sensor_map = load_mapping(mapping_path)
+    """Reload the mapping and re-sweep every RS-485 channel (on its own thread)."""
+    global sensor_map, sensor_index
+    sensor_map, sensor_index = load_all(mapping_path)
+    if sensor_hub is not None:
+        sensor_hub.request_rescan(
+            default_slave_ids(sensor_index) if ids_from_mapping else None)
 
 
 # ============================================================
@@ -382,23 +412,35 @@ def on_rescan():
 # ============================================================
 
 def main():
-    global valve_controller, encoder_controller, sensor_map, mapping_path
+    global valve_controller, sensor_hub, sensor_map, sensor_index
+    global mapping_path, ids_from_mapping
+
+    # Piped output on Windows is cp1252, which cannot print e.g. the help's
+    # arrows; replace such characters instead of crashing.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
 
     parser = argparse.ArgumentParser(
-        description="vc2 pneumatic station web app (valves + RS-485 encoders)")
+        description="vc2 pneumatic station web app (valves + RS-485 sensors)")
     # Ports
     parser.add_argument('--valve-port', default=None,
-                        help='Serial port of the Giga R1 regulator (e.g. /dev/ttyACM0)')
+                        help='Serial port of the Giga R1 regulator (e.g. COM8, /dev/ttyACM0)')
+    parser.add_argument('--rs485-ports', type=parse_port_list, default=None,
+                        help='Comma list of EKU081 channels (default: all of them)')
     parser.add_argument('--rs485-port', default=None,
-                        help='Serial port of the EKU081 USB↔RS-485 adapter '
-                             '(e.g. /dev/ttyCH9344USB0)')
+                        help='A single RS-485 port (same as --rs485-ports with one port)')
     parser.add_argument('--no-valves', action='store_true',
                         help='Do not open the valve regulator')
     parser.add_argument('--no-encoders', '--ne', action='store_true',
-                        help='Do not open the RS-485 encoder bus')
+                        help='Do not open the RS-485 sensor bus')
+    parser.add_argument('--max-kpa', type=float, default=MAX_INPUT_KPA,
+                        help=f'Session pressure cap in kPa, 0 < cap <= {MAX_INPUT_KPA:g} '
+                             f'(default {MAX_INPUT_KPA:g})')
     # Encoder / Modbus options
-    parser.add_argument('--ids', type=parse_slave_ids, default=parse_slave_ids("1,50-80"),
-                        help='Encoder slave ids to scan, e.g. 50-80 or 1,2,10')
+    parser.add_argument('--ids', type=parse_slave_ids, default=None,
+                        help='Sensor ids to scan (default: the ids in the mapping), '
+                             'e.g. 50-86,173-175')
     parser.add_argument('--baud', type=int, default=115200, help='RS-485 baud rate')
     parser.add_argument('--parity', default='N', choices=['N', 'E', 'O'],
                         help='RS-485 parity')
@@ -420,42 +462,56 @@ def main():
     parser.add_argument('--http-port', type=int, default=5000,
                         help='Web server port (default 5000)')
     args = parser.parse_args()
+    try:
+        max_kpa = check_max_kpa(args.max_kpa)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.rs485_port and not args.rs485_ports:
+        args.rs485_ports = [args.rs485_port]
 
     print("=" * 65)
-    print("   VC2 PNEUMATIC STATION (Web App) — valves + RS-485 encoders")
+    print("   VC2 PNEUMATIC STATION (Web App) — valves + RS-485 sensors")
     print("=" * 65)
 
     mapping_path = args.mapping
-    sensor_map = load_mapping(mapping_path)
+    sensor_map, sensor_index = load_all(mapping_path)
+    ids_from_mapping = args.ids is None
+    slave_ids = args.ids or default_slave_ids(sensor_index)
 
-    valve_port, rs485_port = resolve_ports(args)
+    valve_port, rs485_ports = resolve_ports(args)
     print(f"Valve regulator : {valve_port or '(none / disabled)'}")
-    print(f"RS-485 encoders : {rs485_port or '(none / disabled)'}")
-    print(f"Sensor mapping  : {mapping_path} ({len(sensor_map)} regulator(s) mapped)")
+    print(f"RS-485 sensors  : {', '.join(rs485_ports) or '(none / disabled)'}")
+    print(f"Sensor mapping  : {mapping_path} ({len(sensor_map)} regulator(s), "
+          f"{len(sensor_index)} sensor(s))")
+    print(f"Scanned ids     : {len(slave_ids)} ({slave_ids[0]}..{slave_ids[-1]}, "
+          f"{'from the mapping' if ids_from_mapping else '--ids'})")
+    print(f"Pressure cap    : {max_kpa:g} kPa")
 
     if not args.no_valves and valve_port:
-        vc = ValveController(port=valve_port)
+        vc = ValveController(port=valve_port, max_kpa=max_kpa)
         valve_controller = vc if vc.connected else None
         if valve_controller is None:
             print(f"[WARN] Could not open valve regulator on {valve_port}")
 
-    if not args.no_encoders and rs485_port:
-        ec = EncoderController(
-            port=rs485_port,
+    if not args.no_encoders and rs485_ports:
+        hub = SensorHub(
+            rs485_ports, slave_ids,
             baudrate=args.baud,
             parity=args.parity,
-            slave_ids=args.ids,
             counts_per_turn=args.counts_per_turn,
             drum_diameter_mm=args.drum_diameter,
             timeout=args.timeout,
             interval=args.interval,
         )
-        encoder_controller = ec if ec.connected else None
-        if encoder_controller is None:
-            print(f"[WARN] Could not open RS-485 adapter on {rs485_port}")
+        if hub.connected:
+            sensor_hub = hub
+        else:
+            for m in hub.drain_messages():
+                print(m)
+            print(f"[WARN] Could not open any RS-485 port of {', '.join(rs485_ports)}")
 
-    if valve_controller is None and encoder_controller is None:
-        print("[ERR] Opened neither device. Check connections / --valve-port / --rs485-port.")
+    if valve_controller is None and sensor_hub is None:
+        print("[ERR] Opened neither device. Check connections / --valve-port / --rs485-ports.")
         return
 
     print(f"\n[OK] Serving on http://{args.host}:{args.http_port}")
@@ -472,8 +528,8 @@ def main():
             except Exception:
                 pass
             valve_controller.close()
-        if encoder_controller is not None:
-            encoder_controller.close()
+        if sensor_hub is not None:
+            sensor_hub.close()
 
 
 if __name__ == '__main__':
