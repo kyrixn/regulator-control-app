@@ -55,6 +55,11 @@ class SensorHub:
                 out.setdefault(slave, []).append(port)
         return out
 
+    def add_listener(self, fn: Callable) -> None:
+        """Call fn(EncoderReading) for every reading polled on any port."""
+        for c in self.controllers.values():
+            c.listeners.append(fn)
+
     def duplicates(self) -> Dict[int, List[str]]:
         return {s: ps for s, ps in self.owners().items() if len(ps) > 1}
 

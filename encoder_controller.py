@@ -29,7 +29,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 import serial
 import serial.tools.list_ports
@@ -180,6 +180,10 @@ class EncoderController:
 
         self.state_lock = threading.Lock()
         self.message_queue = deque(maxlen=50)
+
+        # Called from the poll thread with every polled reading, e.g. by an
+        # experiment's recorder: fn(EncoderReading).
+        self.listeners: List[Callable[[EncoderReading], None]] = []
 
         # RESCAN requests from other threads. The poll thread runs the scan, so
         # only one thread ever talks on the port (two would interleave frames).
@@ -386,6 +390,8 @@ class EncoderController:
                 )
             with self.state_lock:
                 self.readings[slave] = reading
+            for fn in self.listeners:
+                fn(reading)
         # Sleep between sweeps, but wake at once for a RESCAN.
         self._rescan_requested.wait(self.interval)
 

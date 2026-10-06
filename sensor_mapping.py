@@ -123,6 +123,25 @@ def load_mapping(path: str = DEFAULT_MAPPING_PATH) -> Dict[int, MuscleMap]:
     return _by_regulator(_read_entries(path))
 
 
+def muscles_by_name(path: str = DEFAULT_MAPPING_PATH) -> Dict[str, dict]:
+    """``{muscle: {"regulator", "sensor", "region"}}`` for every named entry,
+    including sensor-only and regulator-only ones (used by the experiments)."""
+    out: Dict[str, dict] = {}
+    for entry in _read_entries(path):
+        name = entry.get("muscle")
+        if not isinstance(name, str) or name in out:
+            continue
+        regulator = _as_int(entry.get("regulator"))
+        sensor = _as_int(entry.get("sensor"))
+        out[name] = {
+            "regulator": regulator if regulator is not None and 0 <= regulator <= MAX_REGULATOR
+            else None,
+            "sensor": sensor if sensor is not None and 1 <= sensor <= MAX_SLAVE else None,
+            "region": _region(entry),
+        }
+    return out
+
+
 def load_all(path: str = DEFAULT_MAPPING_PATH
              ) -> Tuple[Dict[int, MuscleMap], Dict[int, SensorEntry]]:
     """Return ``(by_regulator, by_sensor)`` from one read of the file.

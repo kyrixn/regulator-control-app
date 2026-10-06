@@ -107,6 +107,26 @@ scans exactly the mapped sensor ids unless `--ids` is given, and RESCAN reloads
 the file and re-sweeps every channel. The **Sensors** panel shows every mapped
 sensor plus any other id that answers, with its channel.
 
+## Experiments (hand_win)
+
+Scripted runs live in `experiments/` and use `station.py`: every sensor
+reading, command, Giga pressure readback and phase mark goes to one CSV in
+`runs/` (git-ignored). **Dry by default** (sensors read, nothing sent); `--arm`
+sends. A sensor that stops answering, an error or Ctrl-C sends the Giga's
+stop command, so every valve vents. Stop `app.py` first (and note that
+stopping it vents every muscle).
+
+```
+python experiments/pair_sweep.py --pair FCR,ECR --hold FCU=30,ECU=30            # plan + sensor check
+python experiments/pair_sweep.py --pair FCR,ECR --hold FCU=30,ECU=30 --arm --adc-hz 10
+python experiments/analyze_sweep.py runs/<run>.csv
+```
+
+`pair_sweep.py` measures an antagonist pair's friction dead band (breakaway
+after each turn, gap at zero) and how many sweeps it needs to settle; see
+`docs/superpowers/specs/2026-10-01-pair-sweep-design.md`. The analysis also
+fits the Giga's pressure readback scale when `--adc-hz` was used.
+
 ## Install
 
 ```bash

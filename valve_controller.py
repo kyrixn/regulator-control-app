@@ -72,6 +72,25 @@ def mv_to_bar(mV):
     return max(0.0, mv_to_kpa(mV) / 100.0)
 
 
+ADC_CHANNEL_RE = re.compile(r"C(\d+)=-?\d+\((-?[\d.]+)V\)")
+
+
+def parse_adc_line(line):
+    """The Giga's 'a' reply ("ADC seq=N C0=raw(0.489V) ...") -> {channel: volts}.
+    Channel N reads regulator N's analog output. None for any other line."""
+    if not line.startswith("ADC seq="):
+        return None
+    return {int(ch): float(v) for ch, v in ADC_CHANNEL_RE.findall(line)}
+
+
+def find_giga_port():
+    """The Arduino Giga's serial port, by USB VID 2341, or None."""
+    for p in serial.tools.list_ports.comports():
+        if getattr(p, "vid", None) == 0x2341 or "2341:" in (p.hwid or "").upper():
+            return p.device
+    return None
+
+
 def check_max_kpa(max_kpa):
     """Validate a session pressure cap in kPa: it may only lower MAX_INPUT_KPA."""
     value = float(max_kpa)
@@ -88,6 +107,10 @@ class ValveController:
         # Checked first, so a bad cap never gets as far as opening a port.
         self.max_kpa = check_max_kpa(max_kpa)
         self.ser = None
+        # One writer at a time. On Windows, pyserial's writes share one
+        # overlapped structure, so two threads writing at once (e.g. an ADC
+        # poll and a ramp) can make a write fail.
+        self._write_lock = threading.Lock()
         self.baudrate = baudrate
         self.running = False
         self.read_thread = None
@@ -102,6 +125,12 @@ class ValveController:
 
         # Recent Arduino / app messages for the activity log.
         self.message_queue = deque(maxlen=50)
+
+        # Latest AD7606 reading per channel (volts), from the 'a' command, and
+        # callbacks for experiments that log it: fn(volts_by_channel, t).
+        self.adc_volts = {}
+        self.adc_time = 0.0
+        self.adc_listeners = []
 
         # Active linear ramps: valve -> dict(start_val, target, off, start_t, end_t).
         # A background ticker thread streams interpolated setpoints over serial.
@@ -199,6 +228,16 @@ class ValveController:
 
     def _handle_response(self, line):
         """Process Arduino responses and keep valve_data in sync."""
+        # ADC dump: kept for experiments, not echoed into the activity log.
+        volts = parse_adc_line(line)
+        if volts is not None:
+            t = time.time()
+            with self.display_lock:
+                self.adc_volts, self.adc_time = volts, t
+            for fn in self.adc_listeners:
+                fn(volts, t)
+            return
+
         # Set/off acknowledgments
         if line.startswith("OK:"):
             for m in re.findall(r'V(\d+)=(-?\d+)', line):
@@ -267,7 +306,8 @@ class ValveController:
             return False
 
         try:
-            self.ser.write(f"{command}\n".encode())
+            with self._write_lock:
+                self.ser.write(f"{command}\n".encode())
             return True
         except Exception as e:
             self.message_queue.append(f"[ERR] Send error: {e}")
