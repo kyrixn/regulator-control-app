@@ -17,6 +17,14 @@ docs/superpowers/specs/2026-10-01-pair-sweep-design.md):
   readback      a straight-line fit of the Giga's ADC volts to the commanded kPa
                 during holds, per regulator, if the run logged it
 
+Line-mode runs (pair_sweep.py --line) are analysed the same way along the
+sweep coordinate s instead of d, for every swept muscle, plus:
+
+  clipping      whether a length flattens near the end of a ramp to a turn
+                while s still moves (a joint stop), per turn and muscle
+  by amplitude  dead band and slope per block of --cycles-at; settling is
+                judged over the first block only
+
 The first version measured breakaway from each ramp's start with a 0.05 mm
 threshold; on the real wrist that caught creep after the turn, not slip.
 
@@ -78,6 +86,30 @@ def breakaway(t_len: Sequence[float], length: Sequence[float], t_cmd: Sequence[f
         if abs(length[i] - start) > thr_mm:
             return abs(interp(t_len[i], t_cmd, d_cmd) - interp(t0, t_cmd, d_cmd))
     return None
+
+
+def clipped(t_len: Sequence[float], length: Sequence[float], t_cmd: Sequence[float],
+            x_cmd: Sequence[float], t0: float, t1: float, moving_mm: float) -> Optional[bool]:
+    """Did the length flatten at the end of the sweep ramp [t0, t1] (a joint
+    stop)? Compares its slope against the sweep coordinate over the last 20 % of
+    the ramp with the 20 % before. None when it was not moving there (less than
+    moving_mm over that window), e.g. still inside the dead band."""
+    ta, tb = t0 + 0.6 * (t1 - t0), t0 + 0.8 * (t1 - t0)
+    dy1 = interp(tb, t_len, length) - interp(ta, t_len, length)
+    dy2 = interp(t1, t_len, length) - interp(tb, t_len, length)
+    dx1 = interp(tb, t_cmd, x_cmd) - interp(ta, t_cmd, x_cmd)
+    dx2 = interp(t1, t_cmd, x_cmd) - interp(tb, t_cmd, x_cmd)
+    if abs(dy1) < moving_mm or not dx1 or not dx2:
+        return None
+    return abs(dy2 / dx2) < 0.3 * abs(dy1 / dx1)
+
+
+def line_coordinate(line: Dict[str, Sequence[float]], muscle: str,
+                    kpa: Sequence[float]) -> List[float]:
+    """A line-mode muscle's commanded kPa -> the sweep coordinate s (its kPa at
+    s = -1 and s = +1 are line[muscle])."""
+    lo, hi = line[muscle]
+    return [2.0 * (p - lo) / (hi - lo) - 1.0 for p in kpa]
 
 
 def hold_mean(t: Sequence[float], y: Sequence[float], t0: float, t1: float,
@@ -198,13 +230,15 @@ def compute(csv_path: str, slip_mm: float = 0.5, tol_mm: float = 0.1,
     """All numbers of one run, per cycle and overall (see the module docstring)."""
     with open(os.path.splitext(csv_path)[0] + ".json") as fh:
         meta = json.load(fh)
-    a, b = meta["pair"]
-    P, ncyc = meta["pretension"], meta["cycles"]
+    line = meta.get("line") if meta.get("mode") == "line" else None
+    names = list(line) if line else list(meta["pair"])
+    ncyc = meta["cycles"]
     muscles = meta["muscles"]
-    sa, sb = muscles[a]["sensor"], muscles[b]["sensor"]
+    sensors = tuple(muscles[n]["sensor"] for n in names if muscles[n]["sensor"] is not None)
     lens, cmds, adc, marks, bases = load(csv_path)
     seg = segment_times(marks)
-    res = {"meta": meta, "pair": (a, b), "sensors": (sa, sb), "cycles": [], "slope": {},
+    res = {"meta": meta, "pair": tuple(names), "sensors": sensors, "line": line,
+           "cycles": [], "slope": {}, "slope_by_amp": {},
            "settled": None, "readback": {}, "seg": seg, "no_cycles": "c1 to +" not in seg}
     if res["no_cycles"]:
         return res
@@ -216,17 +250,26 @@ def compute(csv_path: str, slip_mm: float = 0.5, tol_mm: float = 0.1,
         # The dither moves the lengths at its own frequency; average it out so
         # the dead band and gaps describe the slow sweep.
         mm = {s: (ts, smooth(ts, ys, 1.0 / dither["hz"])) for s, (ts, ys) in mm.items()}
-    ra, rb = muscles[a]["regulator"], muscles[b]["regulator"]
-    # The sweep's own coordinate, from the base setpoints when dithering, else
-    # from the commands: d = half the pair's pressure difference from the base.
-    src = bases if ra in bases and rb in bases else cmds
-    t_cmd, kpa_a = src[ra]
-    d_cmd = differential(t_cmd, kpa_a, *src[rb], base=(P, P))
+    if line:
+        # s from the muscle with the largest pressure span (the finest steps).
+        lead = max(line, key=lambda n: abs(line[n][1] - line[n][0]))
+        t_cmd, kpa_lead = cmds[muscles[lead]["regulator"]]
+        d_cmd = line_coordinate(line, lead, kpa_lead)
+        res["lead"] = lead
+    else:
+        a, b = names
+        P = meta["pretension"]
+        ra, rb = muscles[a]["regulator"], muscles[b]["regulator"]
+        # The sweep's own coordinate, from the base setpoints when dithering, else
+        # from the commands: d = half the pair's pressure difference from the base.
+        src = bases if ra in bases and rb in bases else cmds
+        t_cmd, kpa_a = src[ra]
+        d_cmd = differential(t_cmd, kpa_a, *src[rb], base=(P, P))
     res.update(mm=mm, t_cmd=t_cmd, d_cmd=d_cmd)
     name_of = {m["sensor"]: n for n, m in muscles.items() if m["sensor"] is not None}
     ref_sensors = [s for s, n in name_of.items() if n not in exclude and s in mm]
     res.update(name_of=name_of, ref_sensors=ref_sensors)
-    pair = [s for s in (sa, sb) if s in mm]
+    pair = [s for s in sensors if s in mm]
 
     def end_of(label):
         return seg[label][1] if label in seg else None
@@ -242,8 +285,15 @@ def compute(csv_path: str, slip_mm: float = 0.5, tol_mm: float = 0.1,
         t_plus, t_minus = end_of(f"c{k} hold +"), end_of(f"c{k} hold -")
         t_next = end_of(f"c{k + 1} hold +") or (seg["vent"][0] if "vent" in seg else None)
         c = {"cycle": k, "dead_plus": {}, "dead_minus": {}, "creep_plus": {}, "creep_minus": {},
-             "gap": {}}
+             "gap": {}, "clip_plus": {}, "clip_minus": {}}
+        if line and k <= len(meta.get("turns", [])):
+            s_minus, s_plus = meta["turns"][k - 1]
+            c["amp"] = round((s_plus - s_minus) / 2.0, 6)
         for s in pair:
+            for sign in ("+", "-"):
+                r = seg.get(f"c{k} to {sign}")
+                c["clip_plus" if sign == "+" else "clip_minus"][s] = (
+                    clipped(*mm[s], t_cmd, d_cmd, *r, slip_mm / 2) if line and r else None)
             c["dead_plus"][s] = (breakaway(*mm[s], t_cmd, d_cmd, t_plus, t_minus, slip_mm)
                                  if t_plus and t_minus else None)
             c["dead_minus"][s] = (breakaway(*mm[s], t_cmd, d_cmd, t_minus, t_next, slip_mm)
@@ -261,25 +311,35 @@ def compute(csv_path: str, slip_mm: float = 0.5, tol_mm: float = 0.1,
         c["change"] = (max(abs(c["ref"][s] - refs[-2][s]) for s in c["ref"] if s in refs[-2])
                        if k > 1 and c["ref"] and refs[-2] else None)
         res["cycles"].append(c)
-    res["settled"] = settled_cycle(refs, tol_mm)
+    first_block = meta["schedule"][0][1] if line else len(refs)
+    res["settled"] = settled_cycle(refs[:first_block], tol_mm)
 
     if "pre-hold" in seg:
         t0, t1 = seg["pre-hold"]
         res["pre_hold"] = {s: drift(*mm[s], t0, t1) for s in ref_sensors}
 
-    # Moving-branch slope: the last 40 % of each sweep ramp, past the dead band.
+    # Moving-branch slope: the last 40 % of each sweep ramp, past the dead band
+    # (line mode: ramps that ran into a stop left out, and also per amplitude).
     for s in pair:
-        slopes = []
+        slopes, by_amp = [], {}
         for k in range(2, ncyc + 1):
+            c = res["cycles"][k - 1]
             for lab in ("to +", "to -"):
                 if f"c{k} {lab}" not in seg:
+                    continue
+                if c[{"to +": "clip_plus", "to -": "clip_minus"}[lab]].get(s):
                     continue
                 t0, t1 = seg[f"c{k} {lab}"]
                 ta = t0 + 0.6 * (t1 - t0)
                 dd = interp(t1, t_cmd, d_cmd) - interp(ta, t_cmd, d_cmd)
                 if dd:
-                    slopes.append((interp(t1, *mm[s]) - interp(ta, *mm[s])) / dd)
+                    v = (interp(t1, *mm[s]) - interp(ta, *mm[s])) / dd
+                    slopes.append(v)
+                    if "amp" in c:
+                        by_amp.setdefault(c["amp"], []).append(v)
         res["slope"][s] = sorted(slopes)[len(slopes) // 2] if slopes else None
+        for amp, vals in by_amp.items():
+            res["slope_by_amp"].setdefault(amp, {})[s] = sorted(vals)[len(vals) // 2]
 
     # Readback: volts against commanded kPa during holds (first 1 s skipped).
     holds = [(t0 + 1.0, t1) for label, (t0, t1) in seg.items()
@@ -369,6 +429,11 @@ def render(res: dict, csv_path: str, slip_mm: float, tol_mm: float) -> str:
                  f"  not settled within {len(res['cycles'])} cycles (tolerance {tol_mm:g} mm; "
                  f"last change {fmt(last, 3)} mm)")
 
+    return "\n".join(lines + readback_lines(res))
+
+
+def readback_lines(res: dict) -> List[str]:
+    lines = []
     if res["readback"]:
         fits = [r["fit"] for r in res["readback"].values() if r["fit"]]
         lines += ["", "pressure readback (holds, first 1 s skipped); the sketch assumes "
@@ -383,57 +448,163 @@ def render(res: dict, csv_path: str, slip_mm: float, tol_mm: float) -> str:
                 kp, v = r["points"][0]
                 pred = "" if m_avg is None else f" (fit line predicts {m_avg * kp + c_avg:.3f} V)"
                 lines.append(f"  V{reg:<3} single pressure {kp:g} kPa reads {v:.3f} V{pred}")
-    return "\n".join(lines)
+    return lines
+
+
+def _fmt(v, p=1):
+    return "-" if v is None else f"{v:.{p}f}"
+
+
+def _median(vals):
+    vals = sorted(v for v in vals if v is not None)
+    return vals[len(vals) // 2] if vals else None
+
+
+def render_line(res: dict, csv_path: str, slip_mm: float, tol_mm: float) -> str:
+    """The report of a line-mode run: everything along s, one column per muscle."""
+    meta, line, name_of = res["meta"], res["line"], res["name_of"]
+    sensors = [sn for sn in res["sensors"] if sn in res["mm"]]
+    names = [name_of[sn] for sn in sensors]
+    lead = res["lead"]
+    lo, hi = line[lead]
+    cond = {k: v for k, v in (meta.get("condition") or {}).items() if v is not None}
+    first_block = meta["schedule"][0][1]
+    lines = [f"run {os.path.basename(csv_path)}",
+             "line " + ", ".join(f"{n} {line[n][0]:g}:{line[n][1]:g}" for n in line)
+             + " kPa at s = -1:+1; centre s = " + f"{meta.get('centre', 0):g}"
+             + f", held {meta['hold']}, {meta['rate']:g} kPa/s (largest change)",
+             f"s from the {lead} command: 1 unit of s = {abs(hi - lo) / 2:g} kPa of {lead}; "
+             "dead bands are in units of s, slopes in mm per unit of s",
+             f"slip threshold {slip_mm:g} mm; settling over the first block "
+             f"({first_block} cycles), tolerance {tol_mm:g} mm"]
+    if cond:
+        lines.append("condition: " + ", ".join(f"{k} {v:g}" if isinstance(v, float)
+                                               else f"{k} {v}" for k, v in cond.items()))
+    if res.get("pre_hold"):
+        t0, t1 = res["seg"]["pre-hold"]
+        lines.append(f"pre-hold {t1 - t0:.0f} s at the centre pressures, before any cycling: "
+                     + "; ".join(f"{name_of[sn]} {tot:+.3f} mm (last min {rate:+.3f} mm/min)"
+                                 for sn, (tot, rate) in res["pre_hold"].items()))
+
+    def clips(c, key):
+        hit = [name_of[sn] for sn in sensors if c[key].get(sn)]
+        return ",".join(hit) if hit else "-"
+
+    w = 11
+    lines += ["", "dead band after each turn, s (after +turn / after -turn); clipped = length "
+              "flattened before the turn (a stop)",
+              "cycle    a | " + "".join(f"{n:>{w}}" for n in names) + " | clipped +  clipped -"]
+    for c in res["cycles"]:
+        cells = "".join(f"{_fmt(c['dead_plus'].get(sn), 2) + '/' + _fmt(c['dead_minus'].get(sn), 2):>{w}}"
+                        for sn in sensors)
+        lines.append(f"{c['cycle']:5} {_fmt(c.get('amp'), 2):>4} | {cells} | "
+                     f"{clips(c, 'clip_plus'):<10} {clips(c, 'clip_minus')}")
+
+    lines += ["", "gap at the centre (zero from + minus zero from -) and reference "
+              "(end of zero from -), mm",
+              "cycle    a | gap " + "".join(f"{n:>7}" for n in names)
+              + " | ref " + "".join(f"{n:>8}" for n in names) + " | change"]
+    for c in res["cycles"]:
+        lines.append(f"{c['cycle']:5} {_fmt(c.get('amp'), 2):>4} |     "
+                     + "".join(f"{_fmt(c['gap'].get(sn), 2):>7}" for sn in sensors) + " |     "
+                     + "".join(f"{_fmt(c['ref'].get(sn), 3):>8}" for sn in sensors)
+                     + f" | {_fmt(c['change'], 3)}")
+
+    lines += ["", "by amplitude (medians; cycle 1 left out):"]
+    amps = sorted({c["amp"] for c in res["cycles"] if "amp" in c})
+    for amp in amps:
+        cs = [c for c in res["cycles"] if c.get("amp") == amp and c["cycle"] > 1]
+        if not cs:
+            continue
+        ks = ",".join(str(c["cycle"]) for c in cs)
+        lines.append(f"  a {amp:g} (cycles {ks}):")
+        for sn, n in zip(sensors, names):
+            nclip = sum(bool(c["clip_plus"].get(sn)) + bool(c["clip_minus"].get(sn)) for c in cs)
+            slope = res["slope_by_amp"].get(amp, {}).get(sn)
+            lines.append(
+                f"    {n:4} dead band {_fmt(_median(c['dead_plus'].get(sn) for c in cs), 2)} "
+                f"after +, {_fmt(_median(c['dead_minus'].get(sn) for c in cs), 2)} after -; "
+                f"slope {_fmt(slope, 2)} mm/s-unit; gap {_fmt(_median(c['gap'].get(sn) for c in cs), 2)} mm; "
+                f"clipped {nclip}/{2 * len(cs)} turns")
+    last = res["cycles"][first_block - 1]["change"] if len(res["cycles"]) >= first_block else None
+    lines.append(f"  settled at cycle {res['settled']} (first block)" if res["settled"] else
+                 f"  not settled within the first block of {first_block} cycles (tolerance "
+                 f"{tol_mm:g} mm; last change {_fmt(last, 3)} mm)")
+    return "\n".join(lines + readback_lines(res))
 
 
 def analyze(csv_path: str, slip_mm: float = 0.5, tol_mm: float = 0.1,
             exclude: Sequence[str] = ("Sup",), plots: bool = True) -> str:
     res = compute(csv_path, slip_mm, tol_mm, exclude)
-    report = render(res, csv_path, slip_mm, tol_mm)
+    if res["line"] and not res["no_cycles"]:
+        report = render_line(res, csv_path, slip_mm, tol_mm)
+    else:
+        report = render(res, csv_path, slip_mm, tol_mm)
     base = os.path.splitext(csv_path)[0]
     with open(base + "_report.txt", "w") as fh:
         fh.write(report + "\n")
     if plots and not res["no_cycles"]:
         refs = [c["ref"] for c in res["cycles"]]
+        swept = [sn for sn in res["sensors"] if sn in res["mm"]]
+        if res["line"]:
+            xlabel = f"s (1 unit = {abs(res['line'][res['lead']][1] - res['line'][res['lead']][0]) / 2:g} kPa of {res['lead']})"
+            total = None
+        else:
+            a, b = res["pair"]
+            xlabel = f"d = (p({a}) − p({b}))/2 from the base  (kPa)"
+            total = (res["sensors"], f"{a}+{b}")
         _plots(base, res["mm"], res["t_cmd"], res["d_cmd"], res["seg"], len(res["cycles"]),
-               *res["sensors"], *res["pair"], refs, res["ref_sensors"], res["name_of"])
+               swept, [res["name_of"][sn] for sn in swept], xlabel, refs, res["ref_sensors"],
+               res["name_of"], total)
     return report
 
 
-def _plots(base, mm, t_cmd, d_cmd, seg, cycles, sa, sb, a, b, refs, sensors, name_of):
+def _plots(base, mm, t_cmd, d_cmd, seg, cycles, swept, names, xlabel, refs, sensors,
+           name_of, total=None):
+    """<run>_loops.png (length against the sweep coordinate, one panel per swept
+    muscle, one colour per cycle) and <run>_settling.png (each cycle's reference
+    lengths; with total = ((sa, sb), label) also their sum)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5), sharex=True)
+    ncol = min(len(swept), 2)
+    nrow = (len(swept) + ncol - 1) // ncol
+    fig, axes = plt.subplots(nrow, ncol, figsize=(5.5 * ncol, 4.5 * nrow), sharex=True,
+                             squeeze=False)
+    axes = [ax for row in axes for ax in row]
     cmap = plt.get_cmap("viridis")
     for k in range(1, cycles + 1):
         t0 = seg.get(f"c{k} to +", (None,))[0]
         t1 = seg.get(f"c{k} zero from -", (None, None))[1]
         if t0 is None or t1 is None:
             continue
-        for ax, s in zip(axes, (sa, sb)):
-            ts, ys = mm[s]
+        for ax, sn in zip(axes, swept):
+            ts, ys = mm[sn]
             pts = [(interp(t, t_cmd, d_cmd), y) for t, y in zip(ts, ys) if t0 <= t <= t1]
             if pts:
                 ax.plot(*zip(*pts), color=cmap((k - 1) / max(1, cycles - 1)), lw=1,
                         label=f"cycle {k}")
-    for ax, n in zip(axes, (a, b)):
+    for ax, n in zip(axes, names):
         ax.set_title(n)
-        ax.set_xlabel(f"d = (p({a}) − p({b}))/2 from the base  (kPa)")
+        ax.set_xlabel(xlabel)
         ax.set_ylabel("length change (mm)")
         ax.grid(alpha=0.3)
-    axes[1].legend(fontsize=8)
+    for ax in axes[len(swept):]:
+        ax.set_visible(False)
+    axes[min(1, len(swept) - 1)].legend(fontsize=7, ncol=2)
     fig.tight_layout()
     fig.savefig(base + "_loops.png", dpi=130)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(6, 4))
     ks = list(range(1, len(refs) + 1))
-    for s in sensors:
-        ax.plot(ks, [r.get(s, float("nan")) for r in refs], marker="o", label=name_of[s])
-    ax.plot(ks, [r.get(sa, float("nan")) + r.get(sb, float("nan")) for r in refs],
-            marker="s", ls="--", color="k", label=f"{a}+{b}")
+    for sn in sensors:
+        ax.plot(ks, [r.get(sn, float("nan")) for r in refs], marker="o", label=name_of[sn])
+    if total:
+        (sa, sb), label = total
+        ax.plot(ks, [r.get(sa, float("nan")) + r.get(sb, float("nan")) for r in refs],
+                marker="s", ls="--", color="k", label=label)
     ax.set_xlabel("cycle")
     ax.set_ylabel("reference length (mm, end of 'zero from −')")
     ax.grid(alpha=0.3)
@@ -444,7 +615,7 @@ def _plots(base, mm, t_cmd, d_cmd, seg, cycles, sa, sb, a, b, refs, sensors, nam
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Analyse a pair_sweep.py run.")
+    ap = argparse.ArgumentParser(description="Analyse a pair_sweep.py run (pair or line mode).")
     ap.add_argument("csv")
     ap.add_argument("--slip", type=float, default=0.5,
                     help="length change that counts as slip after a turn, mm (default 0.5)")

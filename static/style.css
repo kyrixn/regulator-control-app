@@ -239,6 +239,18 @@ body {
   margin: 0;
   white-space: pre-wrap;
 }
+.cmd-input {
+  width: 100%;
+  margin-top: 6px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-family: inherit;
+  font-size: 13px;
+}
+.cmd-input:focus { outline: none; border-color: var(--highlight); }
 
 @media (max-width: 900px) {
   .panel-body { flex-direction: column; }

@@ -347,7 +347,10 @@ class ValveController:
             self.ramps.clear()
 
     def _ramp_loop(self):
-        """Stream interpolated setpoints for all active ramps until they finish."""
+        """Stream interpolated setpoints for all active ramps until they finish.
+
+        The batch is sent while ramp_lock is held, as emergency_stop() holds it
+        while sending 's': a setpoint can then never follow the stop."""
         while self.running:
             time.sleep(RAMP_STEP)
             now = time.time()
@@ -372,7 +375,6 @@ class ValveController:
                 for valve in finished:
                     self.ramps.pop(valve, None)
 
-            if batch:
                 cmd = ",".join(f"{v},{val}" for v, val in batch)
                 self.send(cmd)
                 for v, val in batch:
@@ -451,10 +453,11 @@ class ValveController:
 
     def emergency_stop(self):
         """Emergency stop - all valves off (cancels any ramps in progress)."""
-        self._cancel_all_ramps()
-        with self.display_lock:
-            self.valve_data.clear()
-        return self.send("s")
+        with self.ramp_lock:
+            self.ramps.clear()
+            with self.display_lock:
+                self.valve_data.clear()
+            return self.send("s")
 
     def query_status(self):
         """Query status of all valves."""

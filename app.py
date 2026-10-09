@@ -23,10 +23,16 @@ Usage:
     python app.py --max-kpa 50                      # lower the pressure cap
     python app.py --valve-port /dev/ttyACM0 --rs485-ports /dev/ttyCH9344USB0
     python app.py --no-valves                       # sensors only
+    python app.py --presets my_presets.json         # presets for 'ps <name>'
+
+The command box under the activity log takes one line: v,kPa pairs, s, ?, p, a
+or 'ps <name>' (see presets.py).
 """
 
 import argparse
+import os
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from typing import List, Optional, Tuple
@@ -45,6 +51,7 @@ from encoder_controller import (
 )
 from sensor_hub import SensorHub
 from sensor_mapping import DEFAULT_MAPPING_PATH, load_all
+from presets import CommandError, PresetRunner, load_presets, parse_command, parse_preset
 
 
 app = Flask(__name__)
@@ -75,6 +82,11 @@ sensor_map = {}
 sensor_index = {}
 mapping_path = DEFAULT_MAPPING_PATH
 ids_from_mapping = True     # False when --ids fixes the scanned ids
+
+# Presets for the command box ('ps <name>'); the file is re-read on every use.
+DEFAULT_PRESETS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets.json")
+presets_path = DEFAULT_PRESETS_PATH
+preset_runner = None        # created with the valve controller
 
 
 # ============================================================
@@ -350,11 +362,18 @@ def on_valve_off(data):
         valve_controller.valve_off(int(data.get('valve')), ramp=_parse_ramp(data))
 
 
-@socketio.on('stop')
-def on_stop():
+def stop_everything(source):
+    """End any preset first (so no later step goes out), then vent every valve."""
+    if preset_runner is not None:
+        preset_runner.stop()
     if valve_controller is not None:
         valve_controller.emergency_stop()
-        valve_controller.message_queue.append('** EMERGENCY STOP (button) **')
+        valve_controller.message_queue.append(f'** EMERGENCY STOP ({source}) **')
+
+
+@socketio.on('stop')
+def on_stop():
+    stop_everything('button')
 
 
 @socketio.on('status')
@@ -367,6 +386,53 @@ def on_status():
 def on_ping():
     if valve_controller is not None:
         valve_controller.ping()
+
+
+def _log_adc_reply(vc, since, timeout=1.0):
+    """The 'a' reply is not echoed to the log by the reader; show it once here."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if vc.adc_time > since:
+            volts = " ".join(f"{ch}:{v:.3f}" for ch, v in sorted(vc.adc_volts.items()))
+            vc.message_queue.append(f"ADC (V): {volts}")
+            return
+        time.sleep(0.02)
+    vc.message_queue.append("[ERR] no ADC reply")
+
+
+@socketio.on('command')
+def on_command(data):
+    """data = {text: one command line, ramp: TIME box seconds}. See presets.py."""
+    text = str(data.get('text', '')).strip()
+    vc = valve_controller
+    if vc is None:
+        socketio.emit('messages', {'lines': ['[ERR] valves not connected']})
+        return
+    vc.message_queue.append(f"> {text}")
+    try:
+        cmd = parse_command(text, vc.max_kpa)
+        if cmd[0] == "preset":
+            name = cmd[1]
+            presets = load_presets(presets_path)
+            if name not in presets:
+                raise CommandError(f"no preset '{name}' in {os.path.basename(presets_path)} "
+                                   f"(have: {', '.join(presets) or 'none'})")
+            steps = parse_preset(presets[name], vc.max_kpa)
+    except CommandError as exc:
+        vc.message_queue.append(f"[ERR] {exc}")
+        return
+
+    if cmd[0] == "stop":
+        stop_everything('command')
+    elif cmd[0] == "raw":
+        since = vc.adc_time
+        vc.send(cmd[1])
+        if cmd[1] == "a":
+            threading.Thread(target=_log_adc_reply, args=(vc, since), daemon=True).start()
+    elif cmd[0] == "set":
+        vc.set_multiple_valves(cmd[1], ramp=_parse_ramp(data))
+    elif cmd[0] == "preset":
+        preset_runner.start(name, steps)
 
 
 # ---- Encoder events (RS-485) -------------------------------
@@ -413,7 +479,7 @@ def on_rescan():
 
 def main():
     global valve_controller, sensor_hub, sensor_map, sensor_index
-    global mapping_path, ids_from_mapping
+    global mapping_path, ids_from_mapping, presets_path, preset_runner
 
     # Piped output on Windows is cp1252, which cannot print e.g. the help's
     # arrows; replace such characters instead of crashing.
@@ -457,6 +523,9 @@ def main():
     # Sensor mapping
     parser.add_argument('--mapping', default=DEFAULT_MAPPING_PATH,
                         help='Path to the sensor↔regulator mapping JSON')
+    parser.add_argument('--presets', default=DEFAULT_PRESETS_PATH,
+                        help="Presets JSON for the command box's 'ps <name>' "
+                             '(default presets.json next to app.py)')
     # Web server
     parser.add_argument('--host', default='0.0.0.0', help='Web server host')
     parser.add_argument('--http-port', type=int, default=5000,
@@ -474,6 +543,7 @@ def main():
     print("=" * 65)
 
     mapping_path = args.mapping
+    presets_path = args.presets
     sensor_map, sensor_index = load_all(mapping_path)
     ids_from_mapping = args.ids is None
     slave_ids = args.ids or default_slave_ids(sensor_index)
@@ -486,12 +556,16 @@ def main():
     print(f"Scanned ids     : {len(slave_ids)} ({slave_ids[0]}..{slave_ids[-1]}, "
           f"{'from the mapping' if ids_from_mapping else '--ids'})")
     print(f"Pressure cap    : {max_kpa:g} kPa")
+    print(f"Presets         : {presets_path}"
+          f"{'' if os.path.exists(presets_path) else ' (not found yet)'}")
 
     if not args.no_valves and valve_port:
         vc = ValveController(port=valve_port, max_kpa=max_kpa)
         valve_controller = vc if vc.connected else None
         if valve_controller is None:
             print(f"[WARN] Could not open valve regulator on {valve_port}")
+        else:
+            preset_runner = PresetRunner(vc, vc.message_queue.append)
 
     if not args.no_encoders and rs485_ports:
         hub = SensorHub(
@@ -521,6 +595,8 @@ def main():
     except KeyboardInterrupt:
         print("\n[STOP] Shutting down...")
     finally:
+        if preset_runner is not None:
+            preset_runner.stop()
         if valve_controller is not None:
             try:
                 valve_controller.emergency_stop()

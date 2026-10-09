@@ -181,6 +181,29 @@ document.getElementById('btnStop').addEventListener('click', () => socket.emit('
 document.getElementById('btnApply').addEventListener('click', applyAll);
 document.getElementById('btnStatus').addEventListener('click', () => socket.emit('status'));
 
+// Command box: one line to the server (kPa pairs, s, ?, p, a, ps <name>);
+// Up/Down walk through the lines sent this session.
+const cmdInput = document.getElementById('cmdInput');
+const cmdHistory = [];
+let cmdPos = 0;
+cmdInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const text = cmdInput.value.trim();
+    if (text === '') return;
+    socket.emit('command', { text, ramp: getRamp() });
+    if (cmdHistory[cmdHistory.length - 1] !== text) cmdHistory.push(text);
+    cmdPos = cmdHistory.length;
+    cmdInput.value = '';
+  } else if (e.key === 'ArrowUp' && cmdPos > 0) {
+    cmdInput.value = cmdHistory[--cmdPos];
+    e.preventDefault();
+  } else if (e.key === 'ArrowDown' && cmdPos < cmdHistory.length) {
+    cmdPos++;
+    cmdInput.value = cmdHistory[cmdPos] ?? '';
+    e.preventDefault();
+  }
+});
+
 // Sensor actions (shared controls)
 document.getElementById('btnZero').addEventListener('click', () => socket.emit('zero'));
 document.getElementById('btnClear').addEventListener('click', () => socket.emit('clear_zero'));
