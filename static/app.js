@@ -181,7 +181,7 @@ document.getElementById('btnStop').addEventListener('click', () => socket.emit('
 document.getElementById('btnApply').addEventListener('click', applyAll);
 document.getElementById('btnStatus').addEventListener('click', () => socket.emit('status'));
 
-// Command box: one line to the server (kPa pairs, s, ?, p, a, ps <name>);
+// Command box: one line to the server (kPa pairs, s, ?, p, a, i1/i0/i, ps <name>);
 // Up/Down walk through the lines sent this session.
 const cmdInput = document.getElementById('cmdInput');
 const cmdHistory = [];

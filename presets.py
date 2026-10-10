@@ -8,6 +8,7 @@ Command line (one line, pressures in kPa, like the valve cells):
   v,kPa[,v,kPa,...]   set regulators; a value may be 'off'
   s                   STOP (every valve off; also ends a running preset)
   ? | p | a           the Giga's status, ping and ADC dump, sent as they are
+  i1 | i0 | i         the Giga's IMU: start / stop the stream, one reading
   ps <name>           run preset <name> from the presets file
 
 Presets file (JSON, re-read on every 'ps'): name -> a list of steps, or a
@@ -37,7 +38,7 @@ from valve_controller import NUM_VALVES
 
 Value = Union[float, str]          # kPa, or "off"
 OFF_WORDS = ("off", "o", "x")
-GIGA_PASSTHROUGH = ("?", "p", "a")
+GIGA_PASSTHROUGH = ("?", "p", "a", "i1", "i0", "i")
 
 
 class CommandError(ValueError):
@@ -104,7 +105,7 @@ def parse_command(text: str, max_kpa: float):
         raise CommandError("empty command")
     tokens = [tok.strip() for tok in line.split(",")]
     if len(tokens) % 2:
-        raise CommandError(f"'{line}': expected v,kPa pairs (or s, ?, p, a, ps <name>)")
+        raise CommandError(f"'{line}': expected v,kPa pairs (or s, ?, p, a, i1, i0, i, ps <name>)")
     pairs = []
     for i in range(0, len(tokens), 2):
         reg = _regulator(tokens[i])

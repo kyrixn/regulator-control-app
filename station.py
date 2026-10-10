@@ -3,8 +3,8 @@
 station.py
 
 Both devices of the station for a scripted experiment: the Giga's regulators
-and the RS-485 length sensors, with every reading, command, ADC sample and
-phase mark written to one long-format CSV (see Recorder).
+and the RS-485 length sensors, with every reading, command, ADC sample, IMU
+frame and phase mark written to one long-format CSV (see Recorder).
 
 Dry by default: sensors are read and logged, commands are logged with the note
 "dry" and never sent. Only armed=True sends. Ramps and holds check the
@@ -38,6 +38,9 @@ class Recorder:
     kind  len   id = sensor,    value = absolute counts (note = error if offline)
           cmd   id = regulator, value = kPa or "off"    (note = "dry" if not sent)
           adc   id = channel,   value = volts
+          imu   id = qw qx qy qz (quaternion), gx gy gz (deg/s), ax ay az (m/s^2,
+                gravity removed), then giga_ms (the Giga's clock at the read;
+                note = "seq=N cal=S3G3A3M3"); all rows of a frame share t
           mark  note = phase label
     """
 
@@ -85,7 +88,7 @@ class Station:
     def __init__(self, recorder: Recorder, muscles: Dict[str, dict], armed: bool = False,
                  max_kpa: float = 50.0, valve_port: Optional[str] = None,
                  rs485_ports: Optional[Sequence[str]] = None, adc_hz: float = 0.0,
-                 stale_s: float = 0.5, hub=None, valves=None):
+                 stale_s: float = 0.5, hub=None, valves=None, imu: bool = False):
         self.recorder = recorder
         self.muscles = dict(muscles)
         self.armed = bool(armed)
@@ -111,7 +114,7 @@ class Station:
         self.hub.add_listener(self._on_reading)
 
         self.valves = valves
-        if self.valves is None and (self.armed or adc_hz > 0):
+        if self.valves is None and (self.armed or adc_hz > 0 or imu):
             port = valve_port or find_giga_port()
             if port is None:
                 raise RuntimeError("Giga not found; pass --valve-port")
@@ -122,6 +125,10 @@ class Station:
                 self._adc_thread = threading.Thread(target=self._adc_loop, args=(adc_hz,),
                                                     daemon=True)
                 self._adc_thread.start()
+            if imu:
+                # The Giga paces the stream (45 Hz); valves.close() stops it.
+                self.valves.imu_listeners.append(self._on_imu)
+                self.valves.imu_stream(True)
 
     # ------------------------------------------------------------------
     # Logging
@@ -138,6 +145,16 @@ class Station:
         for ch in self.regulators:
             if ch in volts:
                 self.recorder.row(t, "adc", ch, volts[ch])
+
+    IMU_IDS = ("qw", "qx", "qy", "qz", "gx", "gy", "gz", "ax", "ay", "az")
+
+    def _on_imu(self, frame, t: float) -> None:
+        values = frame.quat + frame.gyro + frame.accel
+        for id_, value in zip(self.IMU_IDS, values):
+            self.recorder.row(t, "imu", id_, value)
+        s, g, a, m = frame.calib
+        self.recorder.row(t, "imu", "giga_ms", frame.giga_ms,
+                          f"seq={frame.seq} cal=S{s}G{g}A{a}M{m}")
 
     def _adc_loop(self, hz: float) -> None:
         while not self._adc_stop.wait(1.0 / hz):

@@ -25,8 +25,8 @@ Usage:
     python app.py --no-valves                       # sensors only
     python app.py --presets my_presets.json         # presets for 'ps <name>'
 
-The command box under the activity log takes one line: v,kPa pairs, s, ?, p, a
-or 'ps <name>' (see presets.py).
+The command box under the activity log takes one line: v,kPa pairs, s, ?, p, a,
+i1, i0, i or 'ps <name>' (see presets.py).
 """
 
 import argparse

@@ -26,12 +26,16 @@ Arduino command set (Serial @ 115200, values in mV):
   s                    Emergency stop (all valves off)
   ?                    Query status of all valves
   p                    Ping test
+  a                    One AD7606 reading of every channel
+  i1 / i0 / i          BNO055 IMU: start / stop the 45 Hz stream, one reading
 """
 
 import re
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
+from typing import Tuple
 
 import serial
 import serial.tools.list_ports
@@ -83,6 +87,42 @@ def parse_adc_line(line):
     return {int(ch): float(v) for ch, v in ADC_CHANNEL_RE.findall(line)}
 
 
+# BNO055 stream frame (after 'i1', 45 Hz): "I", then fixed-width uppercase hex:
+# seq (4), Giga millis (8), quaternion w x y z, gyro x y z, linear accel x y z
+# (4 each: the raw int16 registers), calibration status (2). 56 bytes with the
+# newline, so the Giga hands each frame to USB as one packet without blocking.
+IMU_FRAME_RE = re.compile(r"I([0-9A-F]{4})([0-9A-F]{8})([0-9A-F]{40})([0-9A-F]{2})")
+IMU_QUAT_LSB = 16384.0      # BNO055 quaternion: 1 = 2^14
+IMU_GYRO_LSB = 16.0         # deg/s
+IMU_ACCEL_LSB = 100.0       # m/s^2 (linear acceleration, gravity removed)
+
+
+@dataclass
+class ImuFrame:
+    seq: int                                     # 16-bit, wraps; a gap = a dropped frame
+    giga_ms: int                                 # Giga millis() when the frame was read
+    quat: Tuple[float, float, float, float]      # w, x, y, z
+    gyro: Tuple[float, float, float]             # deg/s
+    accel: Tuple[float, float, float]            # m/s^2, gravity removed
+    calib: Tuple[int, int, int, int]             # sys, gyr, acc, mag: 0..3 each
+
+
+def parse_imu_line(line):
+    """A stream frame from the Giga -> ImuFrame. None for any other line."""
+    m = IMU_FRAME_RE.fullmatch(line)
+    if m is None:
+        return None
+    seq, ms, data, cal = m.groups()
+    raw = [int(data[i:i + 4], 16) for i in range(0, 40, 4)]
+    v = [r - 0x10000 if r & 0x8000 else r for r in raw]
+    c = int(cal, 16)
+    return ImuFrame(seq=int(seq, 16), giga_ms=int(ms, 16),
+                    quat=tuple(x / IMU_QUAT_LSB for x in v[0:4]),
+                    gyro=tuple(x / IMU_GYRO_LSB for x in v[4:7]),
+                    accel=tuple(x / IMU_ACCEL_LSB for x in v[7:10]),
+                    calib=(c >> 6 & 3, c >> 4 & 3, c >> 2 & 3, c & 3))
+
+
 def find_giga_port():
     """The Arduino Giga's serial port, by USB VID 2341, or None."""
     for p in serial.tools.list_ports.comports():
@@ -131,6 +171,13 @@ class ValveController:
         self.adc_volts = {}
         self.adc_time = 0.0
         self.adc_listeners = []
+
+        # Latest BNO055 frame while the 'i1' stream runs, and callbacks for
+        # experiments that log it: fn(frame, t).
+        self.imu = None
+        self.imu_time = 0.0
+        self.imu_listeners = []
+        self.imu_streaming = False
 
         # Active linear ramps: valve -> dict(start_val, target, off, start_t, end_t).
         # A background ticker thread streams interpolated setpoints over serial.
@@ -214,13 +261,15 @@ class ValveController:
     # ------------------------------------------------------------------
 
     def _read_loop(self):
-        """Background thread to read serial responses."""
+        """Background thread to read serial responses. Sleeps only when no input
+        is waiting, so the 45 Hz IMU stream never queues behind other lines."""
         while self.running:
             try:
                 if self.ser and self.ser.in_waiting:
                     line = self.ser.readline().decode('utf-8', errors='ignore').strip()
                     if line:
                         self._handle_response(line)
+                    continue
             except Exception as e:
                 if self.running:
                     self.message_queue.append(f"[ERR] Read error: {e}")
@@ -228,6 +277,21 @@ class ValveController:
 
     def _handle_response(self, line):
         """Process Arduino responses and keep valve_data in sync."""
+        # IMU stream frame: the most frequent line, so checked first; never logged.
+        frame = parse_imu_line(line)
+        if frame is not None:
+            t = time.time()
+            with self.display_lock:
+                self.imu, self.imu_time = frame, t
+            for fn in self.imu_listeners:
+                fn(frame, t)
+            return
+
+        # IMU replies ('i' reading, stream on/off, not found)
+        if line.startswith("IMU"):
+            self.message_queue.append(line)
+            return
+
         # ADC dump: kept for experiments, not echoed into the activity log.
         volts = parse_adc_line(line)
         if volts is not None:
@@ -467,6 +531,11 @@ class ValveController:
         """Ping test."""
         return self.send("p")
 
+    def imu_stream(self, on):
+        """Start ('i1') or stop ('i0') the Giga's 45 Hz BNO055 stream."""
+        self.imu_streaming = bool(on)
+        return self.send("i1" if on else "i0")
+
     # ------------------------------------------------------------------
     # State accessors (used by the web layer)
     # ------------------------------------------------------------------
@@ -500,7 +569,9 @@ class ValveController:
         return msgs
 
     def close(self):
-        """Close the connection."""
+        """Close the connection (stopping the IMU stream if this session started it)."""
+        if self.imu_streaming and self.ser:
+            self.imu_stream(False)
         self.running = False
         self._cancel_all_ramps()
         if self.read_thread:
